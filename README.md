@@ -27,12 +27,24 @@ git clone https://github.com/wangyaominde/iMessage_llm.git
 cd iMessage_llm
 ```
 
-2. 安装依赖：
+2. 创建并激活虚拟环境：
+```bash
+# 创建虚拟环境
+python -m venv venv
+
+# 在 macOS/Linux 上激活虚拟环境
+source venv/bin/activate
+
+# 在 Windows 上激活虚拟环境
+# .\venv\Scripts\activate
+```
+
+3. 安装依赖：
 ```bash
 pip install -r requirements.txt
 ```
 
-3. 授予 Terminal（或 iTerm）访问权限：
+4. 授予 Terminal（或 iTerm）访问权限：
    - 打开"系统设置"
    - 进入"隐私与安全性" -> "完全磁盘访问权限"
    - 点击"+"号添加你的终端应用（Terminal.app 或 iTerm）
@@ -68,6 +80,7 @@ iMessage_llm/
 ├── imessage_sender.py      # iMessage 发送模块
 ├── requirements.txt        # 项目依赖
 ├── README.md              # 项目说明
+├── venv/                  # Python 虚拟环境（安装后生成）
 └── data/                  # 数据目录
     ├── config.json        # 配置文件
     ├── messages.db        # 消息数据库
@@ -118,6 +131,12 @@ iMessage_llm/
    - 检查配置是否正确
    - 查看日志输出
    - 确认程序正在运行
+
+4. 虚拟环境相关问题
+   - 如果提示 "venv: command not found"，请确保已安装 Python3
+   - 激活虚拟环境后命令行前面应该显示 (venv)
+   - 如需退出虚拟环境，使用命令 `deactivate`
+   - 如果安装依赖时出错，尝试先升级 pip：`pip install --upgrade pip`
 
 ## 许可证
 
