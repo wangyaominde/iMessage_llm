@@ -550,7 +550,7 @@ def get_ai_response(messages_context, contact):
                 }
                 call_history[contact].append(call_data)
                 socketio.emit('call_update', {'contact': contact, **call_data})
-                return "抱歉，服务器响应超时，请稍后再试。"
+                return "抱歉，我和我的服务器联系不上了，一会儿再发一条给我试试。"
             time.sleep(2)
         except Exception as e:
             logger.error(f"获取AI响应时出错: {str(e)}")
@@ -561,7 +561,7 @@ def get_ai_response(messages_context, contact):
             }
             call_history[contact].append(call_data)
             socketio.emit('call_update', {'contact': contact, **call_data})
-            return "抱歉，我现在无法回复，请稍后再试。"
+            return "抱歉，我的服务器设置崩了，联系服务的维护者解决。"
 
 def process_message(message):
     """
