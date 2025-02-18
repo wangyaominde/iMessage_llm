@@ -62,6 +62,31 @@ class DatabaseThread(threading.Thread):
             print(f"获取最新消息时间时出错: {str(e)}")
             return None
             
+    def get_attachment_path(self, filename):
+        """获取附件的完整路径"""
+        attachment_root = os.path.expanduser("~/Library/Messages/Attachments")
+        return os.path.join(attachment_root, filename)
+
+    def copy_attachment(self, src_path, filename):
+        """复制附件到临时目录"""
+        if not os.path.exists(src_path):
+            return None
+            
+        # 创建临时目录
+        temp_dir = os.path.join(os.getcwd(), "data", "attachments")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # 生成目标路径
+        dest_path = os.path.join(temp_dir, filename)
+        
+        try:
+            import shutil
+            shutil.copy2(src_path, dest_path)
+            return dest_path
+        except Exception as e:
+            print(f"复制附件时出错: {str(e)}")
+            return None
+
     def check_new_messages(self):
         """检查新消息"""
         try:
@@ -79,10 +104,15 @@ class DatabaseThread(threading.Thread):
                     handle.id as contact,
                     message.is_from_me,
                     message.cache_roomnames,
-                    message.date AS original_date
+                    message.date AS original_date,
+                    attachment.filename,
+                    attachment.mime_type,
+                    attachment.transfer_name
                 FROM message 
                 LEFT JOIN handle ON message.handle_id = handle.ROWID
-                WHERE message.text IS NOT NULL
+                LEFT JOIN message_attachment_join ON message.ROWID = message_attachment_join.message_id
+                LEFT JOIN attachment ON message_attachment_join.attachment_id = attachment.ROWID
+                WHERE (message.text IS NOT NULL OR attachment.mime_type LIKE 'image/%')
                 AND message.date > ?
                 ORDER BY message.date ASC
                 """
@@ -97,14 +127,28 @@ class DatabaseThread(threading.Thread):
                         'text': row['text'],
                         'is_from_me': bool(row['is_from_me']),
                         'group_chat': row['cache_roomnames'],
-                        'original_date': row['original_date']
+                        'original_date': row['original_date'],
+                        'attachment': None
                     }
+                    
+                    # 处理图片附件
+                    if row['filename'] and row['mime_type'] and row['mime_type'].startswith('image/'):
+                        attachment_path = self.get_attachment_path(row['filename'])
+                        if attachment_path:
+                            copied_path = self.copy_attachment(attachment_path, row['transfer_name'] or os.path.basename(row['filename']))
+                            if copied_path:
+                                msg['attachment'] = {
+                                    'type': row['mime_type'],
+                                    'path': copied_path
+                                }
+                    
                     new_messages.append(msg)
                     
                     # 打印新消息
                     sender = "我" if msg['is_from_me'] else msg['contact']
                     group_info = f" (群聊: {msg['group_chat']})" if msg['group_chat'] else ""
-                    print(f"[{msg['date']}] {sender}{group_info}: {msg['text']}")
+                    content = msg['text'] or "[图片]"
+                    print(f"[{msg['date']}] {sender}{group_info}: {content}")
                 
                 if self.callback and new_messages:
                     self.callback(new_messages)

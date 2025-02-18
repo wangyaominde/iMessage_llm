@@ -11,6 +11,7 @@ from collections import defaultdict
 import json
 import os
 import sqlite3
+import base64
 
 # 配置日志
 logging.basicConfig(
@@ -495,112 +496,143 @@ message_history = defaultdict(list)
 call_history = defaultdict(list)
 MAX_RETRIES = 3  # 最大重试次数
 
-def get_ai_response(messages_context, contact):
-    """
-    从AI模型获取响应
-    """
-    # 检查配置是否有效
-    if not config.is_valid():
-        error_msg = "请先在控制台配置API密钥和相关参数"
-        logger.error(error_msg)
-        call_data = {
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "success": False,
-            "error": error_msg
-        }
-        call_history[contact].append(call_data)
-        socketio.emit('call_update', {'contact': contact, **call_data})
-        return error_msg
+def encode_image_base64(image_path):
+    """将图片编码为 base64 格式"""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            headers = {
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json"
-            }
+def get_ai_response(messages_context, contact):
+    """获取 AI 响应"""
+    try:
+        if not config.load_config() or not config.is_valid():
+            logger.error("配置无效")
+            return None
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {config.api_key}"
+        }
+
+        # 检查是否有图片消息
+        has_image = any(msg.get('attachment') is not None for msg in messages_context if msg['role'] == 'user')
+        
+        if has_image:
+            # 使用 GPT-4 Vision API
+            api_url = "https://api.openai.com/v1/chat/completions"
+            model = "gpt-4-vision-preview"
+            max_tokens = 4096
+        else:
+            # 使用普通的 API
+            api_url = config.get_full_api_url()
+            model = config.model_name
+            max_tokens = 2048
+
+        formatted_messages = []
+        # 添加系统提示
+        if config.system_prompt:
+            formatted_messages.append({
+                "role": "system",
+                "content": config.system_prompt
+            })
+
+        # 处理消息历史
+        for msg in messages_context:
+            if msg['role'] in ['user', 'assistant']:
+                content = msg['content']
+                
+                # 如果是用户消息且包含图片
+                if msg['role'] == 'user' and msg.get('attachment'):
+                    image_path = msg['attachment']['path']
+                    base64_image = encode_image_base64(image_path)
+                    
+                    # 构建多模态消息
+                    content = [
+                        {"type": "text", "text": content} if content else {"type": "text", "text": "请描述这张图片"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                
+                formatted_messages.append({
+                    "role": msg['role'],
+                    "content": content
+                })
+
+        payload = {
+            "model": model,
+            "messages": formatted_messages,
+            "temperature": config.temperature,
+            "max_tokens": max_tokens
+        }
+
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+
+        result = response.json()
+        if 'choices' in result and len(result['choices']) > 0:
+            content = result['choices'][0]['message']['content']
             
-            # 添加system prompt
-            full_messages = [{"role": "system", "content": config.system_prompt}] + messages_context
+            # 记录到数据库
+            db.add_message(contact, 'assistant', content)
+            db.add_call_record(contact, True)
             
-            payload = {
-                "model": config.model_name,
-                "messages": full_messages,
-                "temperature": config.temperature
-            }
-            
-            response = requests.post(config.get_full_api_url(), json=payload, headers=headers, timeout=30)
-            response.raise_for_status()
-            
-            # 记录调用历史并通知前端
-            call_data = {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "success": True
-            }
-            call_history[contact].append(call_data)
-            socketio.emit('call_update', {'contact': contact, **call_data})
-            
-            return response.json()["choices"][0]["message"]["content"]
-        except requests.exceptions.Timeout:
-            logger.warning(f"请求超时，尝试重试 {attempt + 1}/{MAX_RETRIES}")
-            if attempt == MAX_RETRIES - 1:
-                call_data = {
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "success": False,
-                    "error": "超时"
-                }
-                call_history[contact].append(call_data)
-                socketio.emit('call_update', {'contact': contact, **call_data})
-                return "抱歉，服务器响应超时，请稍后再试。"
-            time.sleep(2)
-        except Exception as e:
-            logger.error(f"获取AI响应时出错: {str(e)}")
-            call_data = {
-                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "success": False,
-                "error": str(e)
-            }
-            call_history[contact].append(call_data)
-            socketio.emit('call_update', {'contact': contact, **call_data})
-            return "抱歉，我现在无法回复，请稍后再试。"
+            return content
+        else:
+            logger.error(f"API 响应格式错误: {result}")
+            db.add_call_record(contact, False, "API 响应格式错误")
+            return None
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"调用 AI API 时出错: {error_msg}")
+        db.add_call_record(contact, False, error_msg)
+        return None
 
 def process_message(message):
-    """
-    处理单条消息
-    """
+    """处理新消息"""
     try:
-        if not message['is_from_me'] and message['contact']:
-            contact = message['contact']
-            user_message = message['text']
-            
-            logger.info(f"收到新消息: {user_message} 来自: {contact}")
-            
-            # 保存用户消息
-            db.add_message(contact, "user", user_message)
-            
-            # 通知前端新消息
-            socketio.emit('new_message', {
-                'contact': contact,
-                'role': 'user',
-                'content': user_message
-            })
-            
-            # 获取AI响应
-            ai_response = get_ai_response(db.get_messages(contact, config.max_history_length), contact)
-            
-            # 保存AI响应
-            db.add_message(contact, "assistant", ai_response)
-            
-            # 通知前端AI响应
-            socketio.emit('new_message', {
-                'contact': contact,
-                'role': 'assistant',
-                'content': ai_response
-            })
-            
+        contact = message['contact']
+        content = message['text']
+        is_from_me = message['is_from_me']
+        attachment = message.get('attachment')
+
+        # 忽略自己发送的消息
+        if is_from_me:
+            return
+
+        # 记录用户消息到数据库
+        if content or attachment:
+            db.add_message(contact, 'user', content or '[图片]')
+
+        # 获取历史消息
+        history = db.get_messages(contact, limit=config.max_history_length)
+        
+        # 如果有图片，将图片信息添加到最后一条用户消息中
+        if attachment and history:
+            for msg in reversed(history):
+                if msg['role'] == 'user':
+                    msg['attachment'] = attachment
+                    break
+
+        # 获取 AI 响应
+        response = get_ai_response(history, contact)
+        if response:
             # 发送回复
-            send_imessage(contact, ai_response)
-            logger.info(f"已回复消息: {ai_response} 给: {contact}")
+            send_imessage(contact, response)
             
+            # 发送到 WebSocket
+            socketio.emit('new_message', {
+                'contact': contact,
+                'message': {
+                    'role': 'assistant',
+                    'content': response
+                }
+            })
+
     except Exception as e:
         logger.error(f"处理消息时出错: {str(e)}")
 
