@@ -436,7 +436,10 @@ class Config:
 
     def is_valid(self):
         """检查配置是否有效"""
-        return bool(self.api_key and self.api_url and self.model_name)
+        valid = bool(self.api_key and self.api_url and self.model_name)
+        if not valid:
+            logger.error(f"配置验证失败 - API Key: {bool(self.api_key)}, API URL: {bool(self.api_url)}, Model Name: {bool(self.model_name)}")
+        return valid
 
     def get_full_api_url(self):
         """获取完整的API URL"""
@@ -481,10 +484,14 @@ class Config:
         """从文件加载配置"""
         try:
             if os.path.exists(CONFIG_FILE):
+                logger.info(f"开始加载配置文件: {CONFIG_FILE}")
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                logger.info(f"配置文件内容: {json.dumps(data, ensure_ascii=False)}")
                 self.from_dict(data)
                 logger.info("配置已加载")
+            else:
+                logger.error(f"配置文件不存在: {CONFIG_FILE}")
         except Exception as e:
             logger.error(f"加载配置失败: {str(e)}")
 
