@@ -19,7 +19,26 @@
 - Python 3.7+
 - 支持的 LLM API（如 Deepseek API）
 
-## 安装步骤
+## 快速开始
+
+### 方法一：一键运行（推荐）
+
+只需要执行以下命令即可完成环境配置和程序运行：
+```bash
+source run.sh
+```
+
+- 首次运行时会自动：
+  1. 创建虚拟环境
+  2. 安装所有依赖
+  3. 启动服务
+- 后续运行时会自动：
+  1. 激活虚拟环境
+  2. 启动服务
+
+### 方法二：手动安装配置
+
+如果你需要更细粒度的控制，可以按以下步骤手动配置：
 
 1. 克隆仓库：
 ```bash
@@ -53,10 +72,16 @@ pip install -r requirements.txt
 
 ## 配置说明
 
-1. 首次运行程序：
-```bash
-python message_ai_service.py
-```
+1. 运行程序：
+   - 使用一键运行脚本（推荐）：
+   ```bash
+   source run.sh
+   ```
+   - 或手动运行：
+   ```bash
+   source venv/bin/activate  # 激活虚拟环境
+   python message_ai_service.py
+   ```
 
 2. 访问 Web 控制台：
 ```
