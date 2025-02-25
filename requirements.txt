@@ -5,3 +5,5 @@ pandas==2.1.4
 watchdog==3.0.0
 python-socketio==5.10.0
 eventlet==0.33.3
+apscheduler==3.10.4
+python-dateutil==2.8.2
