@@ -332,8 +332,14 @@ def detect_task_with_llm(message, contact, config):
             logger.info(f"检测到可能的搜索查询: {message}")
             return {"task_type": "search", "params": {"query": message}, "confidence": 0.8}
         
+        # 获取基础系统提示词
+        base_system_prompt = config.system_prompt
+        logger.info(f"[agent_base] 使用基础系统提示词: '{base_system_prompt}'")
+        
         # 构建提示
-        system_prompt = """你是一个智能助手，能够识别用户消息中的任务请求。
+        system_prompt = f"""{base_system_prompt}
+
+你是一个智能助手，能够识别用户消息中的任务请求。
 请分析用户消息，判断是否包含以下类型的任务请求：
 1. weather: 天气查询
 2. news: 新闻获取
@@ -359,6 +365,8 @@ def detect_task_with_llm(message, contact, config):
 如果无法识别任何任务，请返回 {"task_type": null, "confidence": 0}"""
         
         user_prompt = f"请识别以下消息中的任务请求：{message}"
+        
+        logger.info(f"[agent_base] 完整系统提示词: '{system_prompt}'")
         
         # 调用AI模型
         headers = {

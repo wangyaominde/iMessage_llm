@@ -32,12 +32,20 @@ class TranslationAgent:
             翻译结果
         """
         try:
+            # 获取基础系统提示词
+            base_system_prompt = self.config.system_prompt
+            logger.info(f"[TranslationAgent] 使用基础系统提示词: '{base_system_prompt}'")
+            
             # 构建提示
-            system_prompt = f"""你是一个翻译助手。请将用户提供的文本翻译成{target_language}。
+            system_prompt = f"""{base_system_prompt}
+
+你是一个翻译助手。请将用户提供的文本翻译成{target_language}。
 只返回翻译结果，不要包含任何解释或其他内容。
 保持原文的格式和语气。"""
             
             user_prompt = f"请翻译: {text}"
+            
+            logger.info(f"[TranslationAgent] 完整系统提示词: '{system_prompt}'")
             
             # 调用AI模型
             headers = {

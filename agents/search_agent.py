@@ -78,9 +78,15 @@ class SearchAgent:
             now = datetime.now()
             current_time_str = now.strftime("%Y年%m月%d日 %H:%M")
             
+            # 使用配置中的系统提示词作为基础，并添加搜索特定的指令
+            base_system_prompt = self.config.system_prompt
+            logger.info(f"[SearchAgent] 使用基础系统提示词: '{base_system_prompt}'")
+            
             if is_realtime:
-                # 构建系统提示，指示大模型执行网络搜索
-                system_prompt = f"""你是一个强大的搜索助手，具有网络搜索能力。
+                # 构建系统提示，指示大模型执行网络搜索，但保留原始系统提示词的限制
+                system_prompt = f"""{base_system_prompt}
+
+你是一个强大的搜索助手，具有网络搜索能力。
 用户正在请求实时信息，你需要模拟网络搜索并提供最新、最相关的信息。
 当前时间是: {current_time_str}，请确保提供的信息与当前时间相关。
 
@@ -97,14 +103,17 @@ class SearchAgent:
                 
                 user_prompt = f"请搜索并提供关于以下内容的最新信息(当前时间: {current_time_str}): {query}"
             else:
-                # 使用大模型进行普通搜索
-                system_prompt = """你是一个搜索助手。用户会提供一个搜索查询，你需要提供相关的信息。
+                # 使用大模型进行普通搜索，同样保留原始系统提示词的限制
+                system_prompt = f"""{base_system_prompt}
+
+你是一个搜索助手。用户会提供一个搜索查询，你需要提供相关的信息。
 请提供简洁、准确的回答，格式清晰易读。
 在回答中，如果涉及可能已过时的信息，请明确指出这一点。"""
                 
                 user_prompt = f"搜索查询: {query}"
             
             logger.info(f"[SearchAgent] 准备调用API，模型: {self.config.model_name}")
+            logger.info(f"[SearchAgent] 完整系统提示词: '{system_prompt}'")
             
             # 调用AI模型
             headers = {

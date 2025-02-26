@@ -97,13 +97,21 @@ class CalculationAgent:
             计算结果
         """
         try:
+            # 获取基础系统提示词
+            base_system_prompt = self.config.system_prompt
+            logger.info(f"[CalculationAgent] 使用基础系统提示词: '{base_system_prompt}'")
+            
             # 构建提示
-            system_prompt = """你是一个计算助手。用户会提供一个计算表达式或单位转换请求，你需要计算结果。
+            system_prompt = f"""{base_system_prompt}
+
+你是一个计算助手。用户会提供一个计算表达式或单位转换请求，你需要计算结果。
 请确保计算准确，并清晰地展示计算过程和最终结果。
 对于单位转换，请说明转换关系。
 如果是复杂的实时数据计算（如货币汇率转换），请建议用户先使用"/g 查询汇率"获取最新汇率，然后再进行计算。"""
             
             user_prompt = f"计算: {expression}"
+            
+            logger.info(f"[CalculationAgent] 完整系统提示词: '{system_prompt}'")
             
             # 调用AI模型
             headers = {
