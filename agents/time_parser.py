@@ -70,6 +70,59 @@ def parse_time_from_message(time_str):
                 
                 return parsed_time
         
+        # 相对时间模式
+        relative_pattern = r'(\d+)\s*(分钟|小时|天)后'
+        relative_match = re.search(relative_pattern, time_str)
+        if relative_match:
+            amount = int(relative_match.group(1))
+            unit = relative_match.group(2)
+            if unit == '分钟':
+                return now + timedelta(minutes=amount)
+            elif unit == '小时':
+                return now + timedelta(hours=amount)
+            elif unit == '天':
+                return now + timedelta(days=amount)
+        
+        # 更宽松的相对时间模式（如"一分钟后"、"两小时后"等）
+        chinese_num_map = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+        chinese_relative_pattern = r'([一二两三四五六七八九十])\s*(分钟|小时|天)后'
+        chinese_relative_match = re.search(chinese_relative_pattern, time_str)
+        if chinese_relative_match:
+            amount = chinese_num_map.get(chinese_relative_match.group(1), 1)
+            unit = chinese_relative_match.group(2)
+            if unit == '分钟':
+                return now + timedelta(minutes=amount)
+            elif unit == '小时':
+                return now + timedelta(hours=amount)
+            elif unit == '天':
+                return now + timedelta(days=amount)
+        
+        # 更宽松的相对时间模式（如"一个小时以后"、"两个小时之后"等）
+        chinese_relative_pattern2 = r'([一二两三四五六七八九十])\s*个?\s*(分钟|小时|天)[以之]?后'
+        chinese_relative_match2 = re.search(chinese_relative_pattern2, time_str)
+        if chinese_relative_match2:
+            amount = chinese_num_map.get(chinese_relative_match2.group(1), 1)
+            unit = chinese_relative_match2.group(2)
+            if unit == '分钟':
+                return now + timedelta(minutes=amount)
+            elif unit == '小时':
+                return now + timedelta(hours=amount)
+            elif unit == '天':
+                return now + timedelta(days=amount)
+        
+        # 更宽松的相对时间模式（如"一个小时以后"、"两个小时之后"等）- 更广泛的匹配
+        chinese_relative_pattern3 = r'([一二两三四五六七八九十])\s*个?\s*(分钟|小时|天).*?(以后|之后|过后)'
+        chinese_relative_match3 = re.search(chinese_relative_pattern3, time_str)
+        if chinese_relative_match3:
+            amount = chinese_num_map.get(chinese_relative_match3.group(1), 1)
+            unit = chinese_relative_match3.group(2)
+            if unit == '分钟':
+                return now + timedelta(minutes=amount)
+            elif unit == '小时':
+                return now + timedelta(hours=amount)
+            elif unit == '天':
+                return now + timedelta(days=amount)
+        
         return None
         
     except Exception as e:

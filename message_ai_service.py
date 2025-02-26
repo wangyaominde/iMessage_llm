@@ -881,11 +881,15 @@ def process_message(message):
             # 检查是否是定时任务请求
             is_reminder_request = False
             reminder_keywords = ['提醒我', '定时提醒', '闹钟', '定时发送', '定时', '提醒']
-            time_keywords = ['分钟后', '小时后', '天后', '今天', '明天', '后天', '点', '点钟', '：', ':']
+            time_keywords = ['分钟后', '小时后', '天后', '今天', '明天', '后天', '点', '点钟', '：', ':', '以后', '之后', '过后', '个小时', '个分钟']
             
             # 检查是否包含提醒关键词和时间关键词
             has_reminder_keyword = any(keyword in user_message for keyword in reminder_keywords)
             has_time_keyword = any(keyword in user_message for keyword in time_keywords)
+            
+            # 添加更详细的日志
+            logger.info(f"[DEBUG] 提醒关键词检测: {has_reminder_keyword}, 匹配关键词: {[kw for kw in reminder_keywords if kw in user_message]}")
+            logger.info(f"[DEBUG] 时间关键词检测: {has_time_keyword}, 匹配关键词: {[kw for kw in time_keywords if kw in user_message]}")
             
             if has_reminder_keyword and has_time_keyword:
                 is_reminder_request = True
@@ -896,29 +900,38 @@ def process_message(message):
             if is_reminder_request:
                 # 先尝试使用正则表达式解析
                 scheduled_time = parse_time_from_message(user_message)
+                logger.info(f"[DEBUG] 正则表达式解析时间结果: {scheduled_time}")
                 
                 # 如果正则表达式解析失败，尝试使用大模型解析
                 if not scheduled_time:
                     # 获取最近的对话历史作为上下文
                     recent_messages = db.get_messages(contact, 5)
                     context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_messages])
-                    scheduled_time = parse_time_with_llm(user_message, context)
+                    logger.info(f"[DEBUG] 尝试使用大模型解析时间，上下文长度: {len(context)}")
+                    
+                    # 导入时间解析模块
+                    from agents.time_parser import parse_time_with_llm
+                    scheduled_time = parse_time_with_llm(user_message, context, config)
                     
                     # 记录使用了大模型解析
                     if scheduled_time:
                         logger.info(f"使用大模型成功解析时间: {scheduled_time}")
+                    else:
+                        logger.warning(f"[DEBUG] 大模型解析时间失败，无法创建定时任务")
             
             # 如果成功解析到时间，创建定时任务
             if scheduled_time and scheduled_time > datetime.now():
                 # 提取提醒内容
                 # 使用大模型提取提醒内容
                 reminder_content = extract_reminder_content_with_llm(user_message, scheduled_time)
+                logger.info(f"[DEBUG] 提取的提醒内容: {reminder_content}")
                 
                 if not reminder_content:
                     # 如果大模型提取失败，回退到正则表达式
                     content_pattern = r'提醒我(.+?)(?:在|到|于|到了)'
                     content_match = re.search(content_pattern, user_message)
                     reminder_content = content_match.group(1).strip() if content_match else user_message
+                    logger.info(f"[DEBUG] 使用正则表达式提取的提醒内容: {reminder_content}")
                 
                 # 检查提醒内容是否包含需要执行的任务
                 task_type = None
@@ -1016,6 +1029,8 @@ def process_message(message):
                     task_params=task_params
                 )
                 
+                logger.info(f"[DEBUG] 成功创建定时任务: ID={task_id}, 时间={scheduled_time}, 内容={reminder_content}")
+                
                 # 回复用户
                 formatted_time = scheduled_time.strftime("%Y年%m月%d日 %H:%M")
                 ai_response = f"好的，我会在{formatted_time}提醒您：{reminder_content}"
@@ -1095,10 +1110,14 @@ def extract_reminder_content_with_llm(message, scheduled_time):
 请从用户消息中提取出用户想要被提醒的具体内容或事项。
 如果消息中包含天气查询、新闻查询等特定任务，请确保完整提取这些信息。
 例如，如果用户说"一分钟后告诉我上海天气"，应提取"上海天气"而不仅仅是"天气"。
+如果用户说"一个小时以后提醒我取快递，取件码是123456"，应提取"取快递，取件码是123456"。
 只返回提取出的内容，不要包含任何其他解释或格式。
 如果无法确定具体内容，请返回null。"""
         
         user_prompt = f"从以下消息中提取提醒内容: {message}"
+        
+        # 添加日志记录
+        logger.info(f"[DEBUG] 尝试使用LLM提取提醒内容: {message}")
         
         # 调用AI模型
         headers = {
@@ -1123,6 +1142,7 @@ def extract_reminder_content_with_llm(message, scheduled_time):
         
         # 如果返回null或空字符串，则返回None
         if content.lower() == "null" or not content:
+            logger.warning(f"[DEBUG] LLM提取提醒内容返回空或null")
             return None
             
         logger.info(f"成功提取提醒内容: {content}")
