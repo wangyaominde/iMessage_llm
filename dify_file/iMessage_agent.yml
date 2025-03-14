@@ -1,0 +1,168 @@
+app:
+  description: ''
+  icon: 🤖
+  icon_background: '#FFEAD5'
+  mode: agent-chat
+  name: iMessage_agent
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/x:0.0.3@43a3a724a2945f55393b78a3d1868c81ce9394093a8a4d7adee1c3da19f2887c
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/google:0.0.8@3efcf55ffeef9d0f77715e0afb23534952ae0cb385c051d0637e86d71199d1a6
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: baobaobao/weather:0.0.3@d200d18dc5e8f1d5c99bf60575fd939ffaebd8cca7f14edc745ffcc53a358d52
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/duckduckgo:0.0.4@58a551e55609297976cd64c753795ec2467524508ec1f4c22aa485b8bd4c334e
+kind: app
+model_config:
+  agent_mode:
+    enabled: true
+    max_iteration: 1
+    prompt: null
+    strategy: function_call
+    tools:
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: baobaobao/weather/weather
+      provider_name: baobaobao/weather/weather
+      provider_type: builtin
+      tool_label: 天气查询
+      tool_name: weather
+      tool_parameters:
+        city: ''
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: time
+      provider_name: time
+      provider_type: builtin
+      tool_label: 获取当前时间
+      tool_name: current_time
+      tool_parameters:
+        format: ''
+        timezone: ''
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: langgenius/duckduckgo/duckduckgo
+      provider_name: langgenius/duckduckgo/duckduckgo
+      provider_type: builtin
+      tool_label: DuckDuckGo 搜索
+      tool_name: ddgo_search
+      tool_parameters:
+        max_results: ''
+        query: ''
+        require_summary: ''
+    - enabled: true
+      isDeleted: false
+      notAuthor: false
+      provider_id: langgenius/google/google
+      provider_name: langgenius/google/google
+      provider_type: builtin
+      tool_label: 谷歌搜索
+      tool_name: google_search
+      tool_parameters:
+        query: ''
+  annotation_reply:
+    enabled: false
+  chat_prompt_config: {}
+  completion_prompt_config: {}
+  dataset_configs:
+    datasets:
+      datasets: []
+    reranking_enable: false
+    retrieval_model: multiple
+    top_k: 4
+  dataset_query_variable: ''
+  external_data_tools: []
+  file_upload:
+    allowed_file_extensions:
+    - .JPG
+    - .JPEG
+    - .PNG
+    - .GIF
+    - .WEBP
+    - .SVG
+    - .MP4
+    - .MOV
+    - .MPEG
+    - .MPGA
+    allowed_file_types:
+    - image
+    - video
+    allowed_file_upload_methods:
+    - local_file
+    - remote_url
+    enabled: true
+    image:
+      detail: high
+      enabled: true
+      number_limits: 3
+      transfer_methods:
+      - local_file
+      - remote_url
+    number_limits: 3
+  model:
+    completion_params:
+      stop: []
+    mode: chat
+    name: grok-2-1212
+    provider: langgenius/x/x
+  more_like_this:
+    enabled: false
+  opening_statement: ''
+  pre_prompt: '## 命名
+
+    你是一个AI助手，名字是：汽水西瓜。
+
+
+    ## 限制
+
+    注意注意：政治类的聊天（中国大陆领导人，再加上金正恩），一律回复：你想吃紫蛋了？  其他问题不限
+
+    默认使用用户说话的语言，严格按照此要求，，英文缩写和专有名词不限制
+
+    实时问题可以使用功能中的工具进行
+
+    可以使用emoji表情
+
+    当有人问你是什么模型的时候统一答复：我是一个随负载自动切换的智能模型（基于DeepseekV3、GPT-4o、Grok2、Gemini 2 Flash Exo），不要主动回答
+
+    算命、命理均可回复
+
+    今天的日期和当前时间使用time工具
+
+
+    ## 功能
+
+    搜索功能（默认使用duckduckgo，搜索结果要有效）
+
+    天气查询（使用weather，可以查询七天内的天气）'
+  prompt_type: simple
+  retriever_resource:
+    enabled: true
+  sensitive_word_avoidance:
+    configs: []
+    enabled: false
+    type: ''
+  speech_to_text:
+    enabled: false
+  suggested_questions: []
+  suggested_questions_after_answer:
+    enabled: false
+  text_to_speech:
+    enabled: false
+    language: ''
+    voice: ''
+  user_input_form: []
+version: 0.1.5
