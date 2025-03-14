@@ -1,0 +1,4 @@
+flask
+requests
+watchdog
+pandas 

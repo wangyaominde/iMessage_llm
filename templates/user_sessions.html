@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iMessage-Dify 用户会话</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        body {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            background-color: #f8f9fa;
+        }
+        .card {
+            margin-bottom: 1.5rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center mb-4">iMessage-Dify 用户会话</h1>
+        
+        <div class="row mb-3">
+            <div class="col-12">
+                <a href="/" class="btn btn-outline-secondary">返回主页</a>
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h5>用户会话列表</h5>
+            </div>
+            <div class="card-body">
+                {% if sessions %}
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>电话号码</th>
+                                <th>用户ID</th>
+                                <th>会话ID</th>
+                                <th>最后活动时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for phone, session in sessions.items() %}
+                            <tr>
+                                <td>{{ phone }}</td>
+                                <td>{{ session.user_id }}</td>
+                                <td>
+                                    {% if session.conversation_id %}
+                                    <span class="text-success">{{ session.conversation_id[:10] }}...</span>
+                                    {% else %}
+                                    <span class="text-muted">无会话</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ session.last_active }}</td>
+                                <td>
+                                    <form action="/reset_user_session/{{ phone }}" method="post" class="d-inline">
+                                        <button type="submit" class="btn btn-sm btn-warning">重置会话</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="alert alert-info">
+                    暂无用户会话信息。当用户发送消息后，系统会自动创建会话。
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="card">
+            <div class="card-header">
+                <h5>关于用户会话</h5>
+            </div>
+            <div class="card-body">
+                <p>系统会为每个iMessage用户自动创建独立的会话，包括：</p>
+                <ul>
+                    <li><strong>用户ID</strong>：用于在Dify中唯一标识用户</li>
+                    <li><strong>会话ID</strong>：用于保持与Dify的对话上下文</li>
+                </ul>
+                <p>这样每个用户都能拥有独立的对话历史，提供更个性化的体验。</p>
+                <p class="text-muted">注意：重置会话将清除用户的对话历史，下次对话将从头开始。</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html> 

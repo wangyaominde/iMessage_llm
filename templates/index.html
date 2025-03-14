@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>iMessage-Dify 集成</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+    <style>
+        body {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            background-color: #f8f9fa;
+        }
+        .card {
+            margin-bottom: 1.5rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        .status-indicator {
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .status-running {
+            background-color: #28a745;
+        }
+        .status-stopped {
+            background-color: #dc3545;
+        }
+        .btn-pulse {
+            animation: pulse 1s;
+        }
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.1);
+            }
+            100% {
+                transform: scale(1);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center mb-4">iMessage-Dify 集成</h1>
+        
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Dify 配置</h5>
+                    </div>
+                    <div class="card-body">
+                        <form action="/save_config" method="post" id="config-form">
+                            <div class="mb-3">
+                                <label for="dify_url" class="form-label">Dify API URL</label>
+                                <input type="text" class="form-control" id="dify_url" name="dify_url" 
+                                       value="{{ config.dify_url }}" placeholder="例如: https://api.dify.ai/v1" required pattern="https?://.+">
+                                <div class="form-text">通常格式为 https://api.dify.ai/v1 或您的自托管URL，必须以 http:// 或 https:// 开头</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="dify_api_key" class="form-label">Dify API 密钥</label>
+                                <input type="password" class="form-control" id="dify_api_key" name="dify_api_key" 
+                                       value="{{ config.dify_api_key }}" placeholder="您的API密钥">
+                                <div class="form-text">在Dify应用设置中获取API密钥</div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">消息检查模式</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="check_mode" id="mode_polling" value="polling" {% if not config.use_file_watcher %}checked{% endif %}>
+                                    <label class="form-check-label" for="mode_polling">
+                                        定时查询
+                                    </label>
+                                    <div class="form-text">按固定时间间隔查询数据库中的新消息</div>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="check_mode" id="mode_file_watcher" value="file_watcher" {% if config.use_file_watcher %}checked{% endif %}>
+                                    <label class="form-check-label" for="mode_file_watcher">
+                                        文件监控
+                                    </label>
+                                    <div class="form-text">监控iMessage数据库文件变化，实时响应新消息（推荐）</div>
+                                </div>
+                                
+                                <div class="mb-3 form-check" id="system_watcher_container" style="margin-left: 20px; {% if not config.use_file_watcher %}display: none;{% endif %}">
+                                    <input type="checkbox" class="form-check-input" id="use_system_watcher" name="use_system_watcher" 
+                                           {% if config.use_system_watcher %}checked{% endif %}>
+                                    <label class="form-check-label" for="use_system_watcher">使用系统级文件监控</label>
+                                    <div class="form-text">使用系统命令监控文件变化，响应更快速（推荐）</div>
+                                </div>
+                            </div>
+                            <div class="mb-3" id="check_interval_container">
+                                <label for="check_interval" class="form-label">检查间隔 (秒)</label>
+                                <input type="number" class="form-control" id="check_interval" name="check_interval" 
+                                       value="{{ config.check_interval }}" min="1" max="60">
+                                <div class="form-text">定时查询模式下检查新消息的间隔时间</div>
+                            </div>
+                            <div class="mb-3" id="force_check_interval_container">
+                                <label for="force_check_interval" class="form-label">强制检查间隔 (秒)</label>
+                                <input type="number" class="form-control" id="force_check_interval" name="force_check_interval" 
+                                       value="{{ config.force_check_interval }}" min="5" max="300">
+                                <div class="form-text">即使在文件监控模式下，也会每隔此时间强制检查一次新消息（建议设置为较小的值，如10-30秒）</div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Dify 高级选项</label>
+                                <div class="card">
+                                    <div class="card-body">
+                                        <div class="mb-3">
+                                            <label for="dify_response_mode" class="form-label">响应模式</label>
+                                            <select class="form-select" id="dify_response_mode" name="dify_response_mode">
+                                                <option value="blocking" {% if config.dify_response_mode == 'blocking' %}selected{% endif %}>阻塞模式 (blocking)</option>
+                                                <option value="streaming" {% if config.dify_response_mode == 'streaming' %}selected{% endif %}>流式模式 (streaming)</option>
+                                            </select>
+                                            <div class="form-text">阻塞模式等待完整回复，流式模式逐步接收回复</div>
+                                        </div>
+                                        
+                                        <div class="mb-3 form-check">
+                                            <input type="checkbox" class="form-check-input" id="enable_image_detection" name="enable_image_detection" 
+                                                   {% if config.enable_image_detection %}checked{% endif %}>
+                                            <label class="form-check-label" for="enable_image_detection">启用图片链接检测</label>
+                                            <div class="form-text">自动检测消息中的图片链接并发送给Dify</div>
+                                        </div>
+                                        
+                                        <input type="hidden" id="auto_user_sessions" name="auto_user_sessions" value="true" checked>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <button type="submit" class="btn btn-primary">保存配置</button>
+                                <button type="button" id="test-connection" class="btn btn-outline-secondary">测试连接</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>服务状态</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <p>
+                                <span class="status-indicator" id="status-indicator"></span>
+                                <span id="status-text">加载中...</span>
+                            </p>
+                            <p>最后处理的消息ID: <span id="last-message-id">{{ config.last_message_id }}</span></p>
+                        </div>
+                        <div class="d-flex justify-content-between mb-2">
+                            <button id="toggle-service" class="btn btn-success">启动服务</button>
+                            <div class="dropdown">
+                                <button class="btn btn-warning dropdown-toggle" type="button" id="resetDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+                                    重置消息ID
+                                </button>
+                                <ul class="dropdown-menu" aria-labelledby="resetDropdown">
+                                    <li><a class="dropdown-item" href="#" id="reset-to-zero">重置为0（处理所有历史消息）</a></li>
+                                    <li><a class="dropdown-item" href="#" id="reset-to-latest">重置为最新ID（忽略历史消息）</a></li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div class="d-grid gap-2">
+                            <button id="force-check" class="btn btn-outline-primary">手动检查新消息</button>
+                            <a href="/user_sessions" class="btn btn-outline-info">查看用户会话</a>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5>系统日志</h5>
+                        <div>
+                            <button id="refresh-logs" class="btn btn-sm btn-outline-primary me-2" title="刷新日志">
+                                <i class="bi bi-arrow-clockwise"></i> 刷新
+                            </button>
+                            <button id="clear-logs" class="btn btn-sm btn-outline-danger">清除日志</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div id="log-container" style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.9rem; background-color: #f8f9fa; padding: 10px; border-radius: 4px;">
+                            <div id="logs">
+                                <div class="log-entry text-muted">系统日志将在这里显示...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header">
+                        <h5>使用说明</h5>
+                    </div>
+                    <div class="card-body">
+                        <ol>
+                            <li>设置Dify API URL和密钥</li>
+                            <li>选择消息检查模式：
+                                <ul>
+                                    <li><strong>定时查询</strong>：按固定时间间隔查询数据库中的新消息，适合所有环境</li>
+                                    <li><strong>文件监控</strong>：监控iMessage数据库文件变化，实时响应新消息，性能更好但可能在某些环境下不稳定</li>
+                                </ul>
+                            </li>
+                            <li>调整强制检查间隔：即使在文件监控模式下，也建议设置较短的强制检查间隔（10-30秒），以确保不会漏掉消息</li>
+                            <li>测试连接确保配置正确</li>
+                            <li>点击"启动服务"开始监听新消息</li>
+                            <li>收到新iMessage后，系统会自动使用Dify处理并回复</li>
+                        </ol>
+                        <p>系统会自动为每个iMessage用户创建独立的会话，保持对话上下文，无需手动配置。</p>
+                        <p>您可以通过"查看用户会话"按钮查看所有用户的会话信息。</p>
+                        <p class="text-muted">注意: 需要授予访问iMessage数据库的权限</p>
+                        <p class="text-warning">如果发现消息检测不及时，可以尝试：1) 减小强制检查间隔；2) 点击"手动检查新消息"按钮；3) 重启服务</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 表单验证
+            document.getElementById('config-form').addEventListener('submit', function(event) {
+                const urlInput = document.getElementById('dify_url');
+                const url = urlInput.value.trim();
+                
+                if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+                    event.preventDefault();
+                    alert('Dify API URL 必须以 http:// 或 https:// 开头');
+                    urlInput.focus();
+                }
+            });
+            
+            // 初始化检查模式UI
+            function updateCheckModeUI() {
+                const pollingMode = document.getElementById('mode_polling').checked;
+                const checkIntervalContainer = document.getElementById('check_interval_container');
+                const forceCheckIntervalContainer = document.getElementById('force_check_interval_container');
+                
+                if (pollingMode) {
+                    // 定时查询模式
+                    checkIntervalContainer.style.display = 'block';
+                    forceCheckIntervalContainer.style.display = 'none';
+                } else {
+                    // 文件监控模式
+                    checkIntervalContainer.style.display = 'none';
+                    forceCheckIntervalContainer.style.display = 'block';
+                }
+            }
+            
+            // 更新系统级文件监控选项的显示状态
+            function updateSystemWatcherUI() {
+                const fileWatcherMode = document.getElementById('mode_file_watcher').checked;
+                const systemWatcherContainer = document.getElementById('system_watcher_container');
+                
+                if (fileWatcherMode) {
+                    systemWatcherContainer.style.display = 'block';
+                } else {
+                    systemWatcherContainer.style.display = 'none';
+                }
+            }
+            
+            // 初始化UI
+            updateCheckModeUI();
+            updateSystemWatcherUI();
+            
+            // 检查模式切换
+            document.querySelectorAll('input[name="check_mode"]').forEach(function(radio) {
+                radio.addEventListener('change', function() {
+                    updateCheckModeUI();
+                    updateSystemWatcherUI();
+                });
+            });
+            
+            // 测试连接
+            document.getElementById('test-connection').addEventListener('click', function() {
+                fetch('/test_connection', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('连接成功: ' + data.message);
+                    } else {
+                        alert('连接失败: ' + data.message);
+                    }
+                })
+                .catch(error => {
+                    alert('请求错误: ' + error);
+                });
+            });
+            
+            // 切换服务状态
+            const toggleBtn = document.getElementById('toggle-service');
+            toggleBtn.addEventListener('click', function() {
+                fetch('/toggle_service', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus(data.is_running);
+                })
+                .catch(error => {
+                    alert('请求错误: ' + error);
+                });
+            });
+            
+            // 重置最后消息ID
+            document.getElementById('reset-to-zero').addEventListener('click', function() {
+                if (confirm('确定要重置最后处理的消息ID为0吗？这将导致重新处理所有历史消息。')) {
+                    resetLastMessage('zero');
+                }
+            });
+
+            document.getElementById('reset-to-latest').addEventListener('click', function() {
+                if (confirm('确定要重置最后处理的消息ID为当前最新ID吗？这将忽略所有历史消息，只处理新消息。')) {
+                    resetLastMessage('latest');
+                }
+            });
+
+            function resetLastMessage(resetType) {
+                const formData = new FormData();
+                formData.append('reset_type', resetType);
+                
+                fetch('/reset_last_message', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        if (resetType === 'zero') {
+                            document.getElementById('last-message-id').textContent = '0';
+                        } else {
+                            getStatus(); // 更新状态以显示新的ID
+                        }
+                        alert(data.message || '已重置最后处理的消息ID');
+                    } else {
+                        alert('重置失败: ' + (data.message || '未知错误'));
+                    }
+                })
+                .catch(error => {
+                    alert('请求错误: ' + error);
+                });
+            }
+            
+            // 手动检查新消息
+            document.getElementById('force-check').addEventListener('click', function() {
+                this.disabled = true;
+                this.textContent = '检查中...';
+                
+                fetch('/force_check', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        window.addLog('手动触发消息检查', 'info');
+                    } else {
+                        window.addLog('手动检查失败: ' + data.message, 'error');
+                    }
+                })
+                .catch(error => {
+                    window.addLog('请求错误: ' + error, 'error');
+                })
+                .finally(() => {
+                    this.disabled = false;
+                    this.textContent = '手动检查新消息';
+                });
+            });
+            
+            // 更新状态显示
+            function updateStatus(isRunning) {
+                const indicator = document.getElementById('status-indicator');
+                const statusText = document.getElementById('status-text');
+                const toggleBtn = document.getElementById('toggle-service');
+                
+                if (isRunning) {
+                    indicator.className = 'status-indicator status-running';
+                    statusText.textContent = '服务运行中';
+                    toggleBtn.textContent = '停止服务';
+                    toggleBtn.className = 'btn btn-danger';
+                } else {
+                    indicator.className = 'status-indicator status-stopped';
+                    statusText.textContent = '服务已停止';
+                    toggleBtn.textContent = '启动服务';
+                    toggleBtn.className = 'btn btn-success';
+                }
+            }
+            
+            // 定期获取状态
+            function getStatus() {
+                fetch('/get_status')
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus(data.is_running);
+                    document.getElementById('last-message-id').textContent = data.last_message_id;
+                })
+                .catch(error => {
+                    console.error('获取状态错误:', error);
+                });
+            }
+            
+            // 初始化状态并定期更新
+            getStatus();
+            setInterval(getStatus, 30000);
+            
+            // 添加用户交互时更新状态的逻辑
+            document.addEventListener('visibilitychange', function() {
+                if (!document.hidden) {
+                    // 页面变为可见时立即更新状态
+                    getStatus();
+                    getLogs();
+                }
+            });
+            
+            // 清除日志
+            document.getElementById('clear-logs').addEventListener('click', function() {
+                fetch('/clear_logs', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('logs').innerHTML = '<div class="log-entry text-muted">系统日志已清除...</div>';
+                    lastLogCount = 0;
+                })
+                .catch(error => {
+                    console.error('清除日志错误:', error);
+                });
+            });
+            
+            // 获取日志
+            let lastLogCount = 0;
+            function getLogs() {
+                fetch('/get_logs')
+                .then(response => response.json())
+                .then(logs => {
+                    // 只有当日志数量变化时才更新显示
+                    if (logs && logs.length !== lastLogCount) {
+                        lastLogCount = logs.length;
+                        const logsContainer = document.getElementById('logs');
+                        logsContainer.innerHTML = '';
+                        
+                        if (logs.length === 0) {
+                            logsContainer.innerHTML = '<div class="log-entry text-muted">暂无系统日志...</div>';
+                            return;
+                        }
+                        
+                        logs.forEach(log => {
+                            const logEntry = document.createElement('div');
+                            logEntry.className = 'log-entry';
+                            
+                            // 根据级别设置样式
+                            if (log.level === 'error') {
+                                logEntry.className += ' text-danger';
+                            } else if (log.level === 'warning') {
+                                logEntry.className += ' text-warning';
+                            } else if (log.level === 'success') {
+                                logEntry.className += ' text-success';
+                            }
+                            
+                            // 格式化时间戳
+                            const timestamp = log.timestamp.split(' ')[1]; // 只显示时间部分
+                            
+                            logEntry.innerHTML = `<small>[${timestamp}]</small> ${log.message}`;
+                            logsContainer.appendChild(logEntry);
+                        });
+                        
+                        // 自动滚动到底部
+                        const container = document.getElementById('log-container');
+                        container.scrollTop = container.scrollHeight;
+                    }
+                })
+                .catch(error => {
+                    console.error('获取日志错误:', error);
+                });
+            }
+            
+            // 定期获取日志
+            getLogs();
+            setInterval(getLogs, 15000);
+            
+            // 添加日志函数（供后续使用）
+            window.addLog = function(message, type = 'info') {
+                const logs = document.getElementById('logs');
+                const logEntry = document.createElement('div');
+                logEntry.className = 'log-entry';
+                
+                // 根据类型设置样式
+                if (type === 'error') {
+                    logEntry.className += ' text-danger';
+                } else if (type === 'warning') {
+                    logEntry.className += ' text-warning';
+                } else if (type === 'success') {
+                    logEntry.className += ' text-success';
+                }
+                
+                // 添加时间戳
+                const now = new Date();
+                const timestamp = now.toLocaleTimeString();
+                
+                logEntry.innerHTML = `<small>[${timestamp}]</small> ${message}`;
+                logs.appendChild(logEntry);
+                
+                // 更新日志计数
+                lastLogCount++;
+                
+                // 自动滚动到底部
+                const container = document.getElementById('log-container');
+                container.scrollTop = container.scrollHeight;
+                
+                // 限制日志条目数量
+                const maxEntries = 100;
+                const entries = logs.getElementsByClassName('log-entry');
+                if (entries.length > maxEntries) {
+                    logs.removeChild(entries[0]);
+                }
+            };
+            
+            // 添加手动刷新按钮的事件监听器
+            document.getElementById('refresh-logs').addEventListener('click', function() {
+                getLogs();
+                getStatus();
+                this.classList.add('btn-pulse');
+                setTimeout(() => {
+                    this.classList.remove('btn-pulse');
+                }, 1000);
+            });
+        });
+    </script>
+</body>
+</html> 
