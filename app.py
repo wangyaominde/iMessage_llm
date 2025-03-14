@@ -569,6 +569,12 @@ def message_checker():
             if message_reader_thread is None and (current_time - last_reader_retry_time) > reader_retry_interval:
                 print("后台检查: 尝试重新启动消息监控")
                 
+                # 确保先停止任何可能仍在运行的监控器
+                stop_message_reader()
+                
+                # 等待一段时间，确保旧的监控器完全停止
+                time.sleep(1)
+                
                 if start_message_reader():
                     print("后台检查: 消息监控重启成功")
                 else:

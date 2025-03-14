@@ -3,6 +3,7 @@
 # 设置颜色输出
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # 检查是否已存在虚拟环境
@@ -12,7 +13,7 @@ if [ ! -d "venv" ]; then
     
     # 检查虚拟环境是否创建成功
     if [ ! -d "venv" ]; then
-        echo "创建虚拟环境失败，请检查您的Python安装"
+        echo -e "${RED}创建虚拟环境失败，请检查您的Python安装${NC}"
         exit 1
     fi
     
@@ -58,7 +59,22 @@ else
     read -p "按回车键继续..." key
 fi
 
+# 检查是否有旧的进程在运行
+PID=$(pgrep -f "python app.py" || echo "")
+if [ ! -z "$PID" ]; then
+    echo -e "${YELLOW}检测到已有iMessage-Dify进程在运行 (PID: $PID)${NC}"
+    read -p "是否终止旧进程并重新启动? (y/n): " choice
+    if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
+        echo -e "${YELLOW}正在终止旧进程...${NC}"
+        kill $PID
+        sleep 2
+    else
+        echo -e "${YELLOW}保留旧进程，退出启动脚本${NC}"
+        exit 0
+    fi
+fi
+
 # 运行应用
 echo -e "${GREEN}启动应用程序...${NC}"
 echo -e "${GREEN}访问地址: http://localhost:8888${NC}"
-python app.py 
+python app.py 2>&1 | tee -a app.log 
