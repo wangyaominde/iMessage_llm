@@ -130,6 +130,34 @@ class UserSessionManager:
             self.save_sessions()
             add_log(f"更新用户 {phone_number} 的会话ID: {conversation_id}", 'info')
     
+    def clear_all_sessions(self):
+        """清空所有用户会话数据"""
+        old_count = len(self.sessions)
+        old_sessions = self.sessions.copy()  # 保存一份副本用于日志
+        
+        # 记录详细日志
+        add_log(f"准备清空所有用户会话数据，当前共有 {old_count} 个会话", 'info')
+        for phone, session in old_sessions.items():
+            add_log(f"将删除用户 {phone} 的会话数据，用户ID: {session['user_id']}, 会话ID: {session.get('conversation_id', '无')}", 'info')
+        
+        self.sessions = {}
+        self.save_sessions()
+        add_log(f"已清空所有用户会话数据，共 {old_count} 个会话", 'success')
+        return old_count
+    
+    def delete_user_session(self, phone_number):
+        """完全删除指定用户的会话数据"""
+        if phone_number in self.sessions:
+            session = self.sessions[phone_number]
+            add_log(f"准备删除用户 {phone_number} 的会话数据，用户ID: {session['user_id']}, 会话ID: {session.get('conversation_id', '无')}", 'info')
+            del self.sessions[phone_number]
+            self.save_sessions()
+            add_log(f"已成功删除用户 {phone_number} 的会话数据", 'success')
+            return True
+        else:
+            add_log(f"尝试删除不存在的用户 {phone_number} 的会话数据", 'warning')
+            return False
+    
     def _generate_user_id(self, phone_number):
         """生成唯一的用户ID"""
         # 使用电话号码的哈希值作为用户ID的一部分
@@ -653,6 +681,25 @@ def reset_user_session(phone_number):
     if phone_number in user_session_manager.sessions:
         user_session_manager.update_conversation_id(phone_number, '')
         add_log(f"已重置用户 {phone_number} 的会话ID", 'success')
+    return redirect(url_for('user_sessions'))
+
+@app.route('/delete_user_session/<phone_number>', methods=['POST'])
+def delete_user_session(phone_number):
+    """删除指定用户的会话数据"""
+    add_log(f"收到删除用户 {phone_number} 会话数据的请求", 'info')
+    success = user_session_manager.delete_user_session(phone_number)
+    if success:
+        add_log(f"已删除用户 {phone_number} 的会话数据", 'success')
+    else:
+        add_log(f"删除用户 {phone_number} 的会话数据失败，可能不存在", 'warning')
+    return redirect(url_for('user_sessions'))
+
+@app.route('/clear_all_sessions', methods=['POST'])
+def clear_all_sessions():
+    """清空所有用户会话数据"""
+    add_log(f"收到清空所有用户会话数据的请求", 'info')
+    count = user_session_manager.clear_all_sessions()
+    add_log(f"已清空所有用户会话数据，共 {count} 个会话", 'success')
     return redirect(url_for('user_sessions'))
 
 @app.route('/test_connection', methods=['POST'])

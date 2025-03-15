@@ -1,3 +1,6 @@
 /__pycache__
 /config.json
 /venv
+user_sessions.json
+dify_file/.DS_Store
+user_sessions.json
