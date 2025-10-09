@@ -163,10 +163,6 @@ iMessage_llm/
    - 如需退出虚拟环境，使用命令 `deactivate`
    - 如果安装依赖时出错，尝试先升级 pip：`pip install --upgrade pip`
 
-## 许可证
-
-MIT License
-
 ## 贡献指南
 
 欢迎提交 Issue 和 Pull Request！
