@@ -54,6 +54,65 @@ message_reader = None
 message_reader_thread = None
 processing_lock = threading.Lock()  # 防止并发处理同一批消息
 
+# 失败发送重试队列（进程内）
+# 每条: {phone, message, attempts, added_at, last_error}
+retry_queue = deque()
+RETRY_MAX_ATTEMPTS = 5
+RETRY_INTERVAL_SECONDS = 30
+_last_retry_run = 0.0
+_retry_lock = threading.Lock()
+
+def enqueue_retry(phone, message, last_error=""):
+    """把发送失败的消息入队，等 message_checker 周期重试"""
+    with _retry_lock:
+        retry_queue.append({
+            'phone': phone,
+            'message': message,
+            'attempts': 0,
+            'added_at': time.time(),
+            'last_error': last_error
+        })
+    add_log(f"入重试队列: {phone} (当前队列长度 {len(retry_queue)})", 'warning')
+
+def retry_pending_messages():
+    """周期重试 retry_queue 里的消息。最多一次性处理 3 条，避免长时间占锁。"""
+    global _last_retry_run
+    now = time.time()
+    if now - _last_retry_run < RETRY_INTERVAL_SECONDS:
+        return
+    _last_retry_run = now
+
+    with _retry_lock:
+        snapshot = list(retry_queue)[:3]
+
+    if not snapshot:
+        return
+
+    print(f"重试: 开始处理 {len(snapshot)} 条重试消息")
+    for item in snapshot:
+        try:
+            ok, err = send_imessage(item['phone'], item['message'])
+            if ok:
+                with _retry_lock:
+                    try:
+                        retry_queue.remove(item)
+                    except ValueError:
+                        pass
+                add_log(f"重试发送成功: {item['phone']} (尝试 {item['attempts'] + 1} 次)", 'success')
+            else:
+                item['attempts'] += 1
+                item['last_error'] = err
+                if item['attempts'] >= RETRY_MAX_ATTEMPTS:
+                    with _retry_lock:
+                        try:
+                            retry_queue.remove(item)
+                        except ValueError:
+                            pass
+                    add_log(f"重试{RETRY_MAX_ATTEMPTS}次后放弃: {item['phone']} (最后错误: {err[:100]})", 'error')
+        except Exception as e:
+            item['attempts'] += 1
+            add_log(f"重试异常: {item['phone']} -> {e}", 'error')
+
 # 日志记录
 log_entries = deque(maxlen=100)  # 最多保存100条日志
 
@@ -227,28 +286,51 @@ def send_imessage(phone_number, message):
         result = subprocess.run(
             ['osascript', 'send_message.applescript', phone_number, message],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=30   # 防止 Messages.app 弹权限框 / 离线联系人等永久挂起
         )
         if result.returncode == 0:
             return True, result.stdout.strip()
         else:
             return False, result.stderr.strip()
+    except subprocess.TimeoutExpired:
+        # 杀掉卡死的 osascript，强制退出 Messages.app，下次重新拉起
+        print(f"send_imessage 超时(30s): {phone_number}")
+        add_log(f"Messages.app 发送超时，已强制终止 osascript 并重启 Messages", 'error')
+        try:
+            subprocess.run(['pkill', '-9', '-f', 'send_message.applescript'], timeout=5)
+        except Exception:
+            pass
+        try:
+            subprocess.run(['osascript', '-e', 'tell application "Messages" to quit'], timeout=5)
+        except Exception:
+            pass
+        time.sleep(1)
+        try:
+            subprocess.run(['open', '-a', 'Messages'], timeout=5)
+        except Exception:
+            pass
+        return False, "send timeout (30s) — Messages.app was force-restarted"
     except Exception as e:
         return False, str(e)
 
 # 处理新消息的回调函数
 def on_new_messages(messages):
-    """处理从imessage_reader接收到的新消息"""
+    """处理从imessage_reader接收到的新消息
+    返回 True 表示成功接住，reader 会推进游标；返回 False 表示锁被占，reader 会保留 pending 重试
+    """
     print(f"收到 {len(messages)} 条新消息")
-    
+
     # 使用锁防止并发处理
     if processing_lock.acquire(blocking=False):
         try:
             process_messages(messages)
+            return True   # 接住了，reader 可以推进游标
         finally:
             processing_lock.release()
     else:
-        print("已有消息处理任务在进行中，跳过本次处理")
+        print(f"已有消息处理任务在进行中，保留 {len(messages)} 条待重发")
+        return False   # 没接住，reader 不推进游标，下次连同新消息一起再喂
 
 def process_messages(messages):
     """处理消息列表"""
@@ -279,7 +361,9 @@ def process_messages(messages):
                 success, result = send_imessage(message['contact'], reply)
                 if not success:
                     print(f"处理消息: 发送失败: {result}")
-                    add_log(f"发送消息失败: {result}", 'error')
+                    add_log(f"发送消息失败: {result}（已入重试队列）", 'error')
+                    # 入重试队列，message_checker 每 30s 会再发
+                    enqueue_retry(message['contact'], reply, last_error=result)
                 else:
                     print(f"处理消息: 成功发送回复给 {message['contact']}")
                     add_log(f"成功回复消息给 {message['contact']}", 'success')
@@ -476,36 +560,71 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                 # 收集所有的响应片段
                 full_answer = ""
                 conversation_id = None
-                
+                saw_any_event = False   # 用来区分「真没回复」和「网络提前断流」
+
                 for line in response.iter_lines():
-                    if line:
+                    if not line:
+                        continue
+                    try:
+                        # SSE 容错：忽略编码错误（心跳可能带不可见字符）
                         try:
-                            # 解析SSE格式的响应
                             line_text = line.decode('utf-8')
-                            if line_text.startswith('data:'):
-                                data_json = json.loads(line_text[5:])
-                                if 'answer' in data_json:
-                                    full_answer += data_json['answer']
-                                # 提取会话ID
-                                if 'conversation_id' in data_json and not conversation_id:
-                                    conversation_id = data_json['conversation_id']
-                        except Exception as e:
-                            add_log(f"解析流式响应错误: {str(e)}", 'error')
-                
+                        except UnicodeDecodeError:
+                            try:
+                                line_text = line.decode('utf-8', errors='replace')
+                            except Exception:
+                                continue
+
+                        # 标准 SSE：data: {...}；可能带前导空格
+                        if not line_text.startswith('data:'):
+                            continue
+                        payload = line_text[5:].strip()
+                        # 空 payload 或 [DONE] 心跳
+                        if not payload or payload == '[DONE]':
+                            continue
+                        try:
+                            data_json = json.loads(payload)
+                        except json.JSONDecodeError:
+                            # 不是 JSON，跳过（Dify 偶尔发自定义控制行）
+                            continue
+                        if not isinstance(data_json, dict):
+                            continue
+                        saw_any_event = True
+
+                        # answer 字段可能在 message / agent_message / workflow_finished 各种事件里
+                        ans = data_json.get('answer')
+                        if not ans:
+                            # 有些版本把答案放在 data 字段里
+                            data_field = data_json.get('data')
+                            if isinstance(data_field, dict) and isinstance(data_field.get('answer'), str):
+                                ans = data_field['answer']
+                        if ans:
+                            full_answer += ans
+
+                        # 提取会话 ID（任意事件都可能带）
+                        if not conversation_id and data_json.get('conversation_id'):
+                            conversation_id = data_json['conversation_id']
+                    except Exception as e:
+                        add_log(f"解析流式响应错误: {str(e)}", 'error')
+
                 # 如果获取到了会话ID，更新用户会话
                 if conversation_id and phone_number:
                     user_session_manager.update_conversation_id(phone_number, conversation_id)
-                
+
                 if full_answer:
                     # 处理回复，去除多余的空行
                     full_answer = process_reply_text(full_answer)
                     add_log(f"成功处理消息: '{message_text[:30]}...'", 'success')
                     return full_answer
                 else:
-                    add_log("无法从流式响应中获取有效回复", 'error')
+                    # 区分两种情况：真的没拿到回复 vs 流提前断
+                    if saw_any_event:
+                        add_log("流式响应收到事件但无 answer 字段（Agent 可能全在调工具）", 'warning')
+                    else:
+                        add_log("流式响应空（可能提前断流）", 'error')
                     return None
             else:
-                add_log(f"Dify API错误: {response.status_code}", 'error')
+                add_log(f"Dify API错误: {response.status_code}: {response.text[:200]}", 'error')
                 return None
         else:
             # 阻塞模式，直接获取完整响应
@@ -712,24 +831,27 @@ def message_checker():
     
     while not stop_event.is_set():
         current_time = time.time()
-        
+
         if config['is_running']:
             # 如果消息读取器未运行，尝试重新启动
             if message_reader_thread is None and (current_time - last_reader_retry_time) > reader_retry_interval:
                 print("后台检查: 尝试重新启动消息监控")
-                
+
                 # 确保先停止任何可能仍在运行的监控器
                 stop_message_reader()
-                
+
                 # 等待一段时间，确保旧的监控器完全停止
                 time.sleep(1)
-                
+
                 if start_message_reader():
                     print("后台检查: 消息监控重启成功")
                 else:
                     print("后台检查: 消息监控重启失败")
                 last_reader_retry_time = current_time
-        
+
+            # 周期重试之前发送失败的消息
+            retry_pending_messages()
+
         # 等待指定的间隔时间
         wait_time = min(5, config['check_interval'])  # 最长等待5秒
         stop_event.wait(wait_time)

@@ -31,6 +31,9 @@ class DatabaseThread(threading.Thread):
         self.connection = None
         self.last_message_date = None
         self.running = True
+        # 未确认的消息（callback 返回 False 表示没接住，下次连同新消息一起再喂）
+        self.pending_messages = []
+        self.last_pending_emitted_at = 0.0
         
     def connect(self):
         """连接到数据库"""
@@ -69,16 +72,51 @@ class DatabaseThread(threading.Thread):
             return None
             
     def check_new_messages(self):
-        """检查新消息"""
+        """检查新消息。逻辑：
+        1) 有 pending（上轮 callback 没接住）→ 不查 DB，仅 re-emit pending + 拉一轮比游标更新的
+        2) 无 pending → 正常查 DB，把新消息 append 到 pending
+        3) 推进 last_message_date（只要查过 DB 就推，避免 pending 失败时丢新消息）
+        4) callback ack=True 时清空 pending；ack=False 时保留 pending
+        """
         try:
             if not self.connection:
                 if not self.connect():
                     return
 
+            # 1) 有 pending：拉一轮新消息并入 pending，游标推进
+            # 2) 无 pending：拉一轮新消息（如有），游标推进
+            # 关键：游标只要查过就推，不再依赖 callback ack
             current_latest_date = self.get_latest_message_date()
-            
             if current_latest_date and (self.last_message_date is None or current_latest_date > self.last_message_date):
-                query = """
+                fresh = self._fetch_new_messages()
+                if fresh:
+                    self.pending_messages.extend(fresh)
+                self.last_message_date = current_latest_date
+
+            # 3) 把 pending 喂给 callback，ack 才清空
+            if self.callback and self.pending_messages:
+                try:
+                    accepted = self.callback(list(self.pending_messages))
+                except Exception as cb_err:
+                    print(f"callback 抛出异常: {cb_err}")
+                    accepted = False
+
+                if accepted:
+                    self.pending_messages = []
+                else:
+                    if len(self.pending_messages) > 200:
+                        # 极端兜底：太旧的消息直接丢掉
+                        self.pending_messages = self.pending_messages[-100:]
+                    print(f"callback 未接住，保留 {len(self.pending_messages)} 条待重发")
+
+        except Exception as e:
+            print(f"检查新消息时出错: {str(e)}")
+            # 如果发生错误，尝试重新连接
+            self.connection = None
+
+    def _fetch_new_messages(self):
+        """执行 SQL 查询并把结果转成消息 dict 列表（不入 pending）"""
+        query = """
                 SELECT
                     datetime(message.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime') AS message_date,
                     message.text,
@@ -106,47 +144,41 @@ class DatabaseThread(threading.Thread):
                   ))
                 ORDER BY message.date ASC
                 """
-
-                df = pd.read_sql_query(query, self.connection, params=(self.last_message_date if self.last_message_date else 0,))
-
-                new_messages = []
-                for _, row in df.iterrows():
-                    att_list = []
-                    raw = row['attachments']
-                    if raw:
-                        for entry in raw.split('\n'):
-                            if '||' in entry:
-                                path, mime = entry.split('||', 1)
-                                expanded = os.path.expanduser(path)
-                                att_list.append({'path': expanded, 'mime_type': mime, 'exists': os.path.exists(expanded)})
-
-                    msg = {
-                        'date': row['message_date'],
-                        'contact': row['contact'],
-                        'text': row['text'] or '',
-                        'is_from_me': bool(row['is_from_me']),
-                        'group_chat': row['group_chat'],
-                        'original_date': row['original_date'],
-                        'attachments': att_list
-                    }
-                    new_messages.append(msg)
-
-                    # 打印新消息
-                    sender = "我" if msg['is_from_me'] else msg['contact']
-                    group_info = f" (群聊: {msg['group_chat']})" if msg['group_chat'] else ""
-                    att_info = f" [+{len(att_list)}图]" if att_list else ""
-                    text_preview = (msg['text'][:30] + '...') if msg['text'] else '[图片消息]'
-                    print(f"[{msg['date']}] {sender}{group_info}{att_info}: {text_preview}")
-                
-                if self.callback and new_messages:
-                    self.callback(new_messages)
-                
-                self.last_message_date = current_latest_date
-                
+        try:
+            df = pd.read_sql_query(query, self.connection, params=(self.last_message_date if self.last_message_date else 0,))
         except Exception as e:
-            print(f"检查新消息时出错: {str(e)}")
-            # 如果发生错误，尝试重新连接
-            self.connection = None
+            print(f"查询新消息 SQL 出错: {e}")
+            return []
+
+        result = []
+        for _, row in df.iterrows():
+            att_list = []
+            raw = row['attachments']
+            if raw:
+                for entry in raw.split('\n'):
+                    if '||' in entry:
+                        path, mime = entry.split('||', 1)
+                        expanded = os.path.expanduser(path)
+                        att_list.append({'path': expanded, 'mime_type': mime, 'exists': os.path.exists(expanded)})
+
+            msg = {
+                'date': row['message_date'],
+                'contact': row['contact'],
+                'text': row['text'] or '',
+                'is_from_me': bool(row['is_from_me']),
+                'group_chat': row['group_chat'],
+                'original_date': row['original_date'],
+                'attachments': att_list
+            }
+            result.append(msg)
+
+            sender = "我" if msg['is_from_me'] else msg['contact']
+            group_info = f" (群聊: {msg['group_chat']})" if msg['group_chat'] else ""
+            att_info = f" [+{len(att_list)}图]" if att_list else ""
+            text_preview = (msg['text'][:30] + '...') if msg['text'] else '[图片消息]'
+            print(f"[{msg['date']}] {sender}{group_info}{att_info}: {text_preview}")
+
+        return result
             
     def run(self):
         """运行数据库线程"""
