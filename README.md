@@ -27,7 +27,7 @@ chmod +x run.sh
 source run.sh
 ```
 
-3. 在浏览器中访问 http://localhost:8888
+3. 在浏览器中访问 http://localhost:8877
 4. 配置 Dify API URL 和 API 密钥
 5. 点击"测试连接"确保配置正确
 6. 点击"启动服务"开始监听新消息

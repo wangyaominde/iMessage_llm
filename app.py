@@ -202,8 +202,9 @@ def test_dify_connection():
             "Content-Type": "application/json"
         }
         # 尝试获取应用信息，这是一个简单的API调用来测试连接
+        # App 级 API key（app-xxx）使用 /info 端点，兼容 Dify 1.x
         response = requests.get(
-            f"{url.rstrip('/')}/applications/current",
+            f"{url.rstrip('/')}/info",
             headers=headers
         )
         if response.status_code == 200:
@@ -829,8 +830,8 @@ def start_app():
             add_log("启动消息监控失败，请检查权限设置", 'error')
     
     # 启动Flask应用，禁用日志输出
-    print("iMessage-Dify 服务已启动，访问 http://127.0.0.1:8888 进行配置")
-    app.run(host='0.0.0.0', port=8888, debug=False, use_reloader=False)
+    print("iMessage-Dify 服务已启动，访问 http://127.0.0.1:8877 进行配置")
+    app.run(host='0.0.0.0', port=8877, debug=False, use_reloader=False)
 
 def cleanup():
     """清理资源"""
