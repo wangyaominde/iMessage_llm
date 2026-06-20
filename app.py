@@ -260,15 +260,18 @@ def process_messages(messages):
             # 跳过自己发送的消息
             if message['is_from_me']:
                 continue
-                
+
             # 记录详细的消息信息
             group_info = f" (群聊: {message['group_chat']})" if message.get('group_chat') else ""
-            print(f"处理消息: 收到消息: 来自 {message['contact']}{group_info}, 内容: '{message['text'][:30]}...'")
-            add_log(f"收到消息: 来自 {message['contact']}{group_info}, 内容: '{message['text'][:30]}...'", 'success')
-            
-            # 使用Dify处理消息
+            atts = message.get('attachments') or []
+            att_info = f" [+{len(atts)}张图片]" if atts else ""
+            text_preview = (message['text'][:30] + '...') if message.get('text') else '[图片消息]'
+            print(f"处理消息: 收到消息: 来自 {message['contact']}{group_info}{att_info}, 内容: '{text_preview}'")
+            add_log(f"收到消息: 来自 {message['contact']}{group_info}{att_info}, 内容: '{text_preview}'", 'success')
+
+            # 使用Dify处理消息（传入附件）
             print(f"处理消息: 开始处理消息")
-            reply = process_with_dify(message['text'], message['contact'])
+            reply = process_with_dify(message['text'], message['contact'], attachments=atts)
             
             # 只有当成功获取到回复时才发送
             if reply:
@@ -287,24 +290,108 @@ def process_messages(messages):
         print(f"处理消息: 错误: {str(e)}")
         add_log(f"处理新消息错误: {str(e)}", 'error')
 
-def process_with_dify(message_text, phone_number=None):
-    """使用Dify处理消息并获取回复"""
+def convert_heic_to_jpg(heic_path, max_dim=1024):
+    """把 HEIC 转成 JPG（Dify 不一定支持 HEIC）。
+    优先用 sips（macOS 自带），失败再试 Pillow + pillow-heif。
+    max_dim: 长边像素上限，超过则缩放，默认 1024 避免 Dify 单文件 15MB 限制。"""
+    try:
+        import subprocess, tempfile
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+            tmp_path = tmp.name
+        cmd = ['sips', '-s', 'format', 'jpeg', '-Z', str(max_dim), heic_path, '--out', tmp_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+            return tmp_path
+    except Exception as e:
+        print(f"sips 转码失败: {e}")
+    # 后备：Pillow + pillow-heif
+    try:
+        from PIL import Image
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+            tmp_path = tmp.name
+        img = Image.open(heic_path)
+        img.thumbnail((max_dim, max_dim))
+        img.convert('RGB').save(tmp_path, 'JPEG', quality=85)
+        return tmp_path
+    except Exception as e:
+        print(f"Pillow HEIC 转码失败: {e}")
+        return None
+
+def _resize_if_too_large(file_path, max_dim=1024):
+    """非 HEIC 图片如果太大（>5MB）也缩一下，避免 Dify 拒绝"""
+    try:
+        if os.path.getsize(file_path) <= 5 * 1024 * 1024:
+            return file_path
+        import subprocess, tempfile
+        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(file_path)[1] or '.jpg', delete=False) as tmp:
+            tmp_path = tmp.name
+        result = subprocess.run(
+            ['sips', '-Z', str(max_dim), file_path, '--out', tmp_path],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+            return tmp_path
+    except Exception as e:
+        print(f"缩放失败: {e}")
+    return file_path
+
+def upload_file_to_dify(dify_url, dify_headers, file_path, user_id):
+    """上传本地文件到 Dify，返回 upload_file_id（失败返回 None）"""
+    try:
+        path_to_send = _resize_if_too_large(file_path)
+        mime = 'image/jpeg'
+        if path_to_send.lower().endswith('.png'):
+            mime = 'image/png'
+        elif path_to_send.lower().endswith('.gif'):
+            mime = 'image/gif'
+        elif path_to_send.lower().endswith('.webp'):
+            mime = 'image/webp'
+        with open(path_to_send, 'rb') as f:
+            files = {'file': (os.path.basename(path_to_send), f, mime)}
+            data = {'user': user_id}
+            upload_headers = {'Authorization': dify_headers['Authorization']}
+            response = requests.post(
+                f"{dify_url.rstrip('/')}/files/upload",
+                headers=upload_headers,
+                files=files,
+                data=data,
+                timeout=30
+            )
+        if response.status_code in (200, 201):
+            j = response.json()
+            file_id = j.get('id')
+            if file_id:
+                add_log(f"图片上传 Dify 成功: {os.path.basename(path_to_send)} -> {file_id}", 'success')
+                return file_id
+        add_log(f"图片上传 Dify 失败: HTTP {response.status_code} {response.text[:200]}", 'error')
+        return None
+    except Exception as e:
+        add_log(f"图片上传异常: {e}", 'error')
+        return None
+
+def process_with_dify(message_text, phone_number=None, attachments=None):
+    """使用Dify处理消息并获取回复
+    attachments: [{'path':..., 'mime_type':..., 'exists':...}, ...] 来自 imessage_reader
+    """
     if not config['dify_url'] or not config['dify_api_key']:
         add_log("Dify未配置，无法处理消息", 'error')
         return None
-    
+
     # 验证URL格式
     url = config['dify_url'].strip()
     if not url.startswith(('http://', 'https://')):
         add_log("Dify URL格式错误：必须以 http:// 或 https:// 开头", 'error')
         return None
-    
+
     try:
         headers = {
             "Authorization": f"Bearer {config['dify_api_key']}",
             "Content-Type": "application/json"
         }
-        
+
         # 准备请求数据
         request_data = {
             "inputs": {},
@@ -329,7 +416,7 @@ def process_with_dify(message_text, phone_number=None):
         if config['enable_image_detection']:
             image_url_pattern = r'https?://\S+\.(jpg|jpeg|png|gif|webp)'
             image_urls = re.findall(image_url_pattern, message_text)
-            
+
             if image_urls:
                 files = []
                 for url in image_urls[:5]:  # 限制最多5个图片
@@ -340,6 +427,39 @@ def process_with_dify(message_text, phone_number=None):
                     })
                 if files:
                     request_data["files"] = files
+
+        # 上传 iMessage 收到的本地图片到 Dify，并把 upload_file_id 附带给 chat-messages
+        if attachments:
+            user_id = request_data.get('user', f"imessage-temp-{int(time.time())}")
+            uploaded = []
+            for att in attachments[:5]:  # 限 5 张
+                if not att.get('exists'):
+                    add_log(f"图片文件不存在，已跳过: {att.get('path')}", 'warning')
+                    continue
+                # HEIC 转 JPG（Dify 不一定支持 HEIC）
+                path_to_upload = att['path']
+                if att['mime_type'] == 'image/heic':
+                    jpg_path = convert_heic_to_jpg(att['path'])
+                    if jpg_path:
+                        path_to_upload = jpg_path
+                    else:
+                        add_log(f"HEIC 转码失败，尝试原图上传: {att['path']}", 'warning')
+                file_id = upload_file_to_dify(url, headers, path_to_upload, user_id)
+                if file_id:
+                    uploaded.append({
+                        "type": "image",
+                        "transfer_method": "local_file",
+                        "upload_file_id": file_id
+                    })
+                else:
+                    add_log(f"图片上传 Dify 失败: {att['path']}", 'error')
+
+            if uploaded:
+                # 合并：URL 检测出的图 + 本地图片
+                request_data['files'] = (request_data.get('files') or []) + uploaded
+                # 如果用户只发了图没发文字，给一个默认 query 让 Agent 有事可做
+                if not message_text.strip():
+                    request_data['query'] = "[用户发送了一张图片]"
         
         # 如果使用流式响应模式，需要特殊处理
         if config['dify_response_mode'] == 'streaming':

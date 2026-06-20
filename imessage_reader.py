@@ -49,8 +49,14 @@ class DatabaseThread(threading.Thread):
                 
         query = """
         SELECT MAX(date) AS latest_date
-        FROM message 
+        FROM message
         WHERE text IS NOT NULL
+           OR EXISTS (
+               SELECT 1 FROM message_attachment_join
+               JOIN attachment ON message_attachment_join.attachment_id = attachment.ROWID
+               WHERE message_attachment_join.message_id = message.ROWID
+                 AND attachment.mime_type LIKE 'image/%'
+           )
         """
         
         try:
@@ -73,38 +79,64 @@ class DatabaseThread(threading.Thread):
             
             if current_latest_date and (self.last_message_date is None or current_latest_date > self.last_message_date):
                 query = """
-                SELECT 
+                SELECT
                     datetime(message.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime') AS message_date,
                     message.text,
                     handle.id as contact,
                     message.is_from_me,
-                    message.cache_roomnames,
-                    message.date AS original_date
-                FROM message 
+                    message.cache_roomnames AS group_chat,
+                    message.date AS original_date,
+                    message.ROWID AS message_rowid,
+                    (
+                        SELECT GROUP_CONCAT(attachment.filename || '||' || attachment.mime_type, char(10))
+                        FROM message_attachment_join
+                        JOIN attachment ON message_attachment_join.attachment_id = attachment.ROWID
+                        WHERE message_attachment_join.message_id = message.ROWID
+                          AND attachment.filename IS NOT NULL
+                          AND attachment.mime_type LIKE 'image/%'
+                    ) AS attachments
+                FROM message
                 LEFT JOIN handle ON message.handle_id = handle.ROWID
-                WHERE message.text IS NOT NULL
-                AND message.date > ?
+                WHERE message.date > ?
+                  AND (message.text IS NOT NULL OR EXISTS (
+                      SELECT 1 FROM message_attachment_join
+                      JOIN attachment ON message_attachment_join.attachment_id = attachment.ROWID
+                      WHERE message_attachment_join.message_id = message.ROWID
+                        AND attachment.mime_type LIKE 'image/%'
+                  ))
                 ORDER BY message.date ASC
                 """
-                
+
                 df = pd.read_sql_query(query, self.connection, params=(self.last_message_date if self.last_message_date else 0,))
-                
+
                 new_messages = []
                 for _, row in df.iterrows():
+                    att_list = []
+                    raw = row['attachments']
+                    if raw:
+                        for entry in raw.split('\n'):
+                            if '||' in entry:
+                                path, mime = entry.split('||', 1)
+                                expanded = os.path.expanduser(path)
+                                att_list.append({'path': expanded, 'mime_type': mime, 'exists': os.path.exists(expanded)})
+
                     msg = {
                         'date': row['message_date'],
                         'contact': row['contact'],
-                        'text': row['text'],
+                        'text': row['text'] or '',
                         'is_from_me': bool(row['is_from_me']),
-                        'group_chat': row['cache_roomnames'],
-                        'original_date': row['original_date']
+                        'group_chat': row['group_chat'],
+                        'original_date': row['original_date'],
+                        'attachments': att_list
                     }
                     new_messages.append(msg)
-                    
+
                     # 打印新消息
                     sender = "我" if msg['is_from_me'] else msg['contact']
                     group_info = f" (群聊: {msg['group_chat']})" if msg['group_chat'] else ""
-                    print(f"[{msg['date']}] {sender}{group_info}: {msg['text']}")
+                    att_info = f" [+{len(att_list)}图]" if att_list else ""
+                    text_preview = (msg['text'][:30] + '...') if msg['text'] else '[图片消息]'
+                    print(f"[{msg['date']}] {sender}{group_info}{att_info}: {text_preview}")
                 
                 if self.callback and new_messages:
                     self.callback(new_messages)
