@@ -456,6 +456,32 @@ def upload_file_to_dify(dify_url, dify_headers, file_path, user_id):
         add_log(f"图片上传异常: {e}", 'error')
         return None
 
+def _try_blocking_fallback(url, headers, request_data, timeout=30):
+    """流式没拿到 answer 时，阻塞模式重试一次。
+    注意：Agent App 通常不支持 blocking（Dify 会返回 400），所以这个 fallback 大概率失败，
+    失败时返回 None，让上层走重试队列。"""
+    try:
+        blocking_payload = dict(request_data)
+        blocking_payload['response_mode'] = 'blocking'
+        r = requests.post(
+            f"{url.rstrip('/')}/chat-messages",
+            headers=headers,
+            json=blocking_payload,
+            timeout=timeout
+        )
+        if r.status_code == 200:
+            j = r.json()
+            ans = j.get('answer') or (j.get('data') or {}).get('answer') if isinstance(j.get('data'), dict) else None
+            if ans:
+                return ans
+            # 把响应 dump 出来帮排查
+            add_log(f"blocking 也无 answer，响应: {str(j)[:300]}", 'error')
+        else:
+            add_log(f"blocking fallback 失败: HTTP {r.status_code}: {r.text[:200]}", 'warning')
+    except Exception as e:
+        add_log(f"blocking fallback 异常: {e}", 'warning')
+    return None
+
 def process_with_dify(message_text, phone_number=None, attachments=None):
     """使用Dify处理消息并获取回复
     attachments: [{'path':..., 'mime_type':..., 'exists':...}, ...] 来自 imessage_reader
@@ -561,6 +587,7 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                 full_answer = ""
                 conversation_id = None
                 saw_any_event = False   # 用来区分「真没回复」和「网络提前断流」
+                raw_events_dump = []   # 记录前 5 个原始事件，便于排查「无 answer」的情况
 
                 for line in response.iter_lines():
                     if not line:
@@ -590,6 +617,11 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                         if not isinstance(data_json, dict):
                             continue
                         saw_any_event = True
+                        # 记录前 5 个事件供排查
+                        if len(raw_events_dump) < 5:
+                            ev = data_json.get('event', '?')
+                            has_ans = 'answer' in data_json
+                            raw_events_dump.append(f"{ev}(answer={has_ans})")
 
                         # answer 字段可能在 message / agent_message / workflow_finished 各种事件里
                         ans = data_json.get('answer')
@@ -598,6 +630,11 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                             data_field = data_json.get('data')
                             if isinstance(data_field, dict) and isinstance(data_field.get('answer'), str):
                                 ans = data_field['answer']
+                        # 最后的兜底：workflow_finished / message_end 有时把 answer 放在 metadata 里
+                        if not ans:
+                            meta = data_json.get('metadata')
+                            if isinstance(meta, dict) and isinstance(meta.get('answer'), str):
+                                ans = meta['answer']
                         if ans:
                             full_answer += ans
 
@@ -619,7 +656,15 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                 else:
                     # 区分两种情况：真的没拿到回复 vs 流提前断
                     if saw_any_event:
-                        add_log("流式响应收到事件但无 answer 字段（Agent 可能全在调工具）", 'warning')
+                        add_log(
+                            f"流式响应收到事件但无 answer（事件序列: {', '.join(raw_events_dump)}）",
+                            'warning'
+                        )
+                        # Fallback：阻塞模式重试一次（部分 Dify 部署支持 agent 的 blocking）
+                        fallback = _try_blocking_fallback(url, headers, request_data, timeout=30)
+                        if fallback:
+                            add_log("阻塞 fallback 拿到回复，发送", 'success')
+                            return process_reply_text(fallback)
                     else:
                         add_log("流式响应空（可能提前断流）", 'error')
                     return None
@@ -665,19 +710,24 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
         return None
 
 def process_reply_text(text):
-    """处理回复文本，去除多余的空行"""
+    """处理回复文本：剥离推理模型的 <think> 块 + 去除多余的空行"""
     if not text:
         return text
-    
+
+    # 剥离 DeepSeek-R1 / 推理模型的 <think>...</think> 块
+    # 兼容：跨行、带前后空白、HTML 实体转义形式 &lt;think 等
+    text = re.sub(r'<\s*think\s*>.*?<\s*/\s*think\s*>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'&lt;\s*think\s*&gt;.*?&lt;\s*/\s*think\s*&gt;', '', text, flags=re.DOTALL | re.IGNORECASE)
+
     # 去除开头和结尾的空白字符
     text = text.strip()
-    
+
     # 将多个连续空行替换为单个空行
     text = re.sub(r'\n\s*\n', '\n\n', text)
-    
+
     # 确保消息末尾没有多余的换行符
     text = text.rstrip('\n')
-    
+
     return text
 
 class iMessageDBHandler(FileSystemEventHandler):
