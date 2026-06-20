@@ -659,12 +659,72 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                     add_log(f"成功处理消息: '{message_text[:30]}...'", 'success')
                     return full_answer
                 else:
-                    # 区分两种情况：真的没拿到回复 vs 流提前断
+                    # 流里出现 error 事件（如 new_sensitive 标记的会话被毒化），
+                    # 旧 conv_id 已清。现在用全新会话重试一次，让用户能继续用。
+                    if saw_error_event and request_data.get('conversation_id') is None:
+                        # 只有当第一次请求就带了 conv_id、且被清掉后才重试
+                        pass
                     if saw_error_event:
                         add_log(
-                            f"流式响应包含 error 事件（事件序列: {', '.join(raw_events_dump)}），已清掉旧 conversation_id",
-                            'error'
+                            f"流式 error（事件: {', '.join(raw_events_dump)}），用新会话重试一次",
+                            'warning'
                         )
+                        # 移除可能仍残留的 conversation_id
+                        retry_payload = dict(request_data)
+                        retry_payload.pop('conversation_id', None)
+                        retry_payload.pop('files', None)   # 第二次不带图，避免再次触发 sensitive
+                        retry_payload['query'] = (
+                            message_text.strip()
+                            if message_text.strip()
+                            else '[用户上一条消息因内容审核被拒，本次重试无图]'
+                        )
+                        retry_resp = requests.post(
+                            f"{url.rstrip('/')}/chat-messages",
+                            headers=headers,
+                            json=retry_payload,
+                            timeout=60,
+                            stream=True
+                        )
+                        if retry_resp.status_code == 200:
+                            retry_answer = ""
+                            retry_conv_id = None
+                            for rline in retry_resp.iter_lines():
+                                if not rline:
+                                    continue
+                                try:
+                                    rtext = rline.decode('utf-8', errors='replace')
+                                except Exception:
+                                    continue
+                                if not rtext.startswith('data:'):
+                                    continue
+                                rp = rtext[5:].strip()
+                                if not rp or rp == '[DONE]':
+                                    continue
+                                try:
+                                    rj = json.loads(rp)
+                                except json.JSONDecodeError:
+                                    continue
+                                if not isinstance(rj, dict):
+                                    continue
+                                if rj.get('event') == 'error':
+                                    # 重试也失败，放弃
+                                    add_log(f"重试也遇 error: {str(rj)[:300]}", 'error')
+                                    retry_answer = ""
+                                    break
+                                ra = rj.get('answer')
+                                if not ra and isinstance(rj.get('data'), dict):
+                                    ra = rj['data'].get('answer')
+                                if ra:
+                                    retry_answer += ra
+                                if not retry_conv_id and rj.get('conversation_id'):
+                                    retry_conv_id = rj['conversation_id']
+                            if retry_answer:
+                                if retry_conv_id and phone_number:
+                                    user_session_manager.update_conversation_id(phone_number, retry_conv_id)
+                                add_log("新会话重试成功，已回复", 'success')
+                                return process_reply_text(retry_answer)
+                        else:
+                            add_log(f"新会话重试 HTTP {retry_resp.status_code}: {retry_resp.text[:200]}", 'error')
                     elif saw_any_event:
                         add_log(
                             f"流式响应收到事件但无 answer（事件序列: {', '.join(raw_events_dump)}）",
