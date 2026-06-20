@@ -456,32 +456,6 @@ def upload_file_to_dify(dify_url, dify_headers, file_path, user_id):
         add_log(f"图片上传异常: {e}", 'error')
         return None
 
-def _try_blocking_fallback(url, headers, request_data, timeout=30):
-    """流式没拿到 answer 时，阻塞模式重试一次。
-    注意：Agent App 通常不支持 blocking（Dify 会返回 400），所以这个 fallback 大概率失败，
-    失败时返回 None，让上层走重试队列。"""
-    try:
-        blocking_payload = dict(request_data)
-        blocking_payload['response_mode'] = 'blocking'
-        r = requests.post(
-            f"{url.rstrip('/')}/chat-messages",
-            headers=headers,
-            json=blocking_payload,
-            timeout=timeout
-        )
-        if r.status_code == 200:
-            j = r.json()
-            ans = j.get('answer') or (j.get('data') or {}).get('answer') if isinstance(j.get('data'), dict) else None
-            if ans:
-                return ans
-            # 把响应 dump 出来帮排查
-            add_log(f"blocking 也无 answer，响应: {str(j)[:300]}", 'error')
-        else:
-            add_log(f"blocking fallback 失败: HTTP {r.status_code}: {r.text[:200]}", 'warning')
-    except Exception as e:
-        add_log(f"blocking fallback 异常: {e}", 'warning')
-    return None
-
 def process_with_dify(message_text, phone_number=None, attachments=None):
     """使用Dify处理消息并获取回复
     attachments: [{'path':..., 'mime_type':..., 'exists':...}, ...] 来自 imessage_reader
@@ -574,6 +548,8 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
         # 如果使用流式响应模式，需要特殊处理
         if config['dify_response_mode'] == 'streaming':
             # 流式响应模式下，我们需要收集所有的响应片段
+            # 如果带过期的 conversation_id 失败（404 Conversation Not Exists），
+            # 下面会清掉它并重试一次（不带 conversation_id，新开对话）
             response = requests.post(
                 f"{url.rstrip('/')}/chat-messages",
                 headers=headers,
@@ -581,13 +557,32 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                 timeout=60,  # 流式响应可能需要更长的超时时间
                 stream=True
             )
-            
+
+            # 处理 404 Conversation Not Exists：清掉旧 conversation_id 并重试一次
+            if response.status_code == 404 and 'Conversation Not Exists' in response.text:
+                if phone_number and request_data.get('conversation_id'):
+                    add_log(
+                        f"会话已过期 (conv_id={request_data['conversation_id'][:8]}...)，清掉重试",
+                        'warning'
+                    )
+                    user_session_manager.sessions.get(phone_number, {})['conversation_id'] = ''
+                    user_session_manager.save_sessions()
+                    request_data.pop('conversation_id', None)
+                response = requests.post(
+                    f"{url.rstrip('/')}/chat-messages",
+                    headers=headers,
+                    json=request_data,
+                    timeout=60,
+                    stream=True
+                )
+
             if response.status_code == 200:
                 # 收集所有的响应片段
                 full_answer = ""
                 conversation_id = None
                 saw_any_event = False   # 用来区分「真没回复」和「网络提前断流」
                 raw_events_dump = []   # 记录前 5 个原始事件，便于排查「无 answer」的情况
+                saw_error_event = False
 
                 for line in response.iter_lines():
                     if not line:
@@ -617,9 +612,19 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                         if not isinstance(data_json, dict):
                             continue
                         saw_any_event = True
+                        ev = data_json.get('event', '?')
+
+                        # 错误事件：清掉旧 conversation_id（防止下次还踩坑），记录详情
+                        if ev == 'error' or data_json.get('code') == 'not_found':
+                            saw_error_event = True
+                            add_log(f"Dify 流式 error 事件: {str(data_json)[:500]}", 'error')
+                            # 如果是会话找不到导致的错误，标记需要重试
+                            if phone_number and ('conversation' in str(data_json).lower() or 'not_found' in str(data_json)):
+                                user_session_manager.sessions.get(phone_number, {})['conversation_id'] = ''
+                                user_session_manager.save_sessions()
+
                         # 记录前 5 个事件供排查
                         if len(raw_events_dump) < 5:
-                            ev = data_json.get('event', '?')
                             has_ans = 'answer' in data_json
                             raw_events_dump.append(f"{ev}(answer={has_ans})")
 
@@ -655,16 +660,16 @@ def process_with_dify(message_text, phone_number=None, attachments=None):
                     return full_answer
                 else:
                     # 区分两种情况：真的没拿到回复 vs 流提前断
-                    if saw_any_event:
+                    if saw_error_event:
+                        add_log(
+                            f"流式响应包含 error 事件（事件序列: {', '.join(raw_events_dump)}），已清掉旧 conversation_id",
+                            'error'
+                        )
+                    elif saw_any_event:
                         add_log(
                             f"流式响应收到事件但无 answer（事件序列: {', '.join(raw_events_dump)}）",
                             'warning'
                         )
-                        # Fallback：阻塞模式重试一次（部分 Dify 部署支持 agent 的 blocking）
-                        fallback = _try_blocking_fallback(url, headers, request_data, timeout=30)
-                        if fallback:
-                            add_log("阻塞 fallback 拿到回复，发送", 'success')
-                            return process_reply_text(fallback)
                     else:
                         add_log("流式响应空（可能提前断流）", 'error')
                     return None
