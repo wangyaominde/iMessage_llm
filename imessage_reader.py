@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sqlite3
 import os
+import re
 from datetime import datetime
 import pandas as pd
 import time
@@ -8,6 +9,55 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import threading
 import queue
+
+
+def decode_attributed_body(blob):
+    """从 iMessage 的 attributedBody(苹果 typedstream 归档)里解析出纯文本。
+    macOS 15.4+ 之后很多消息的文字只写进 attributedBody，message.text 为空。
+    返回解析出的文本；失败返回 ''。
+    """
+    if not blob:
+        return ''
+    if isinstance(blob, str):
+        try:
+            blob = blob.encode('utf-8', 'surrogateescape')
+        except Exception:
+            return ''
+
+    # 主路径：定位 NSString 标记后的长度前缀 + UTF-8 文本
+    try:
+        if b'NSString' in blob:
+            s = blob.split(b'NSString', 1)[1]
+            s = s[5:]  # 跳过类型元数据(\x01\x94\x84\x01+ 之类)
+            marker = s[:1]
+            if marker == b'\x81':          # 2 字节小端长度
+                ln = int.from_bytes(s[1:3], 'little'); txt = s[3:3 + ln]
+            elif marker == b'\x82':         # 3 字节
+                ln = int.from_bytes(s[1:4], 'little'); txt = s[4:4 + ln]
+            elif marker == b'\x84':         # 4 字节小端长度
+                ln = int.from_bytes(s[1:5], 'little'); txt = s[5:5 + ln]
+            else:                           # 单字节长度(<=127)
+                ln = s[0]; txt = s[1:1 + ln]
+            decoded = txt.decode('utf-8', 'replace').strip('\x00')
+            if decoded.strip():
+                return decoded
+    except Exception:
+        pass
+
+    # 兜底：抠出最长的一段可见 UTF-8 文本(处理结构不匹配的边角情况)
+    try:
+        candidates = re.findall(rb'[\x20-\x7e\xc2-\xf4][\x80-\xbf\x20-\x7e]{1,}', blob)
+        best = b''
+        for cand in candidates:
+            if len(cand) > len(best):
+                best = cand
+        guess = best.decode('utf-8', 'replace').strip()
+        # 去掉尾部残留的元数据关键词
+        for junk in ('iI', 'NSDictionary', 'NSObject', 'NSNumber', 'streamtyped'):
+            guess = guess.split(junk)[0]
+        return guess.strip()
+    except Exception:
+        return ''
 
 class iMessageDatabaseHandler(FileSystemEventHandler):
     def __init__(self, event_queue):
@@ -54,6 +104,7 @@ class DatabaseThread(threading.Thread):
         SELECT MAX(date) AS latest_date
         FROM message
         WHERE text IS NOT NULL
+           OR attributedBody IS NOT NULL
            OR EXISTS (
                SELECT 1 FROM message_attachment_join
                JOIN attachment ON message_attachment_join.attachment_id = attachment.ROWID
@@ -120,6 +171,7 @@ class DatabaseThread(threading.Thread):
                 SELECT
                     datetime(message.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime') AS message_date,
                     message.text,
+                    message.attributedBody,
                     handle.id as contact,
                     message.is_from_me,
                     message.cache_roomnames AS group_chat,
@@ -136,7 +188,7 @@ class DatabaseThread(threading.Thread):
                 FROM message
                 LEFT JOIN handle ON message.handle_id = handle.ROWID
                 WHERE message.date > ?
-                  AND (message.text IS NOT NULL OR EXISTS (
+                  AND (message.text IS NOT NULL OR message.attributedBody IS NOT NULL OR EXISTS (
                       SELECT 1 FROM message_attachment_join
                       JOIN attachment ON message_attachment_join.attachment_id = attachment.ROWID
                       WHERE message_attachment_join.message_id = message.ROWID
@@ -161,10 +213,17 @@ class DatabaseThread(threading.Thread):
                         expanded = os.path.expanduser(path)
                         att_list.append({'path': expanded, 'mime_type': mime, 'exists': os.path.exists(expanded)})
 
+            # text 为空(macOS 15.4+ 常见)则从 attributedBody 解析出文字
+            text_val = row['text'] or ''
+            if not text_val.strip():
+                decoded = decode_attributed_body(row['attributedBody'])
+                if decoded:
+                    text_val = decoded
+
             msg = {
                 'date': row['message_date'],
                 'contact': row['contact'],
-                'text': row['text'] or '',
+                'text': text_val,
                 'is_from_me': bool(row['is_from_me']),
                 'group_chat': row['group_chat'],
                 'original_date': row['original_date'],
