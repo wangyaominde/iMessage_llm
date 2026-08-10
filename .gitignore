@@ -1,6 +1,7 @@
-/__pycache__
+__pycache__/
 /config.json
 /venv
 user_sessions.json
+/agent_state
 dify_file/.DS_Store
 app.log

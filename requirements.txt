@@ -1,4 +1,8 @@
 flask
 requests
 watchdog
-pandas 
+pandas
+anthropic
+openai
+pillow
+pillow-heif 

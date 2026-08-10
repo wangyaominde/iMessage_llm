@@ -30,14 +30,17 @@ def decode_attributed_body(blob):
             s = blob.split(b'NSString', 1)[1]
             s = s[5:]  # 跳过类型元数据(\x01\x94\x84\x01+ 之类)
             marker = s[:1]
+            # Apple typedstream 变长长度前缀：0x81→uint16, 0x82→uint32, 0x83→uint64，其余为单字节长度
             if marker == b'\x81':          # 2 字节小端长度
                 ln = int.from_bytes(s[1:3], 'little'); txt = s[3:3 + ln]
-            elif marker == b'\x82':         # 3 字节
-                ln = int.from_bytes(s[1:4], 'little'); txt = s[4:4 + ln]
-            elif marker == b'\x84':         # 4 字节小端长度
+            elif marker == b'\x82':         # 4 字节小端长度
                 ln = int.from_bytes(s[1:5], 'little'); txt = s[5:5 + ln]
-            else:                           # 单字节长度(<=127)
+            elif marker == b'\x83':         # 8 字节小端长度（极少见）
+                ln = int.from_bytes(s[1:9], 'little'); txt = s[9:9 + ln]
+            elif s[0] < 0x80:               # 单字节长度(<=127)
                 ln = s[0]; txt = s[1:1 + ln]
+            else:                           # 未知的高位标记：留空，交给下面的启发式兜底
+                txt = b''
             decoded = txt.decode('utf-8', 'replace').strip('\x00')
             if decoded.strip():
                 return decoded
@@ -45,8 +48,10 @@ def decode_attributed_body(blob):
         pass
 
     # 兜底：抠出最长的一段可见 UTF-8 文本(处理结构不匹配的边角情况)
+    # 续接字符类里也允许 UTF-8 lead 字节(\xc2-\xf4)，否则中文这种多字节文本会在每个字处断开，
+    # 反而被 'NSString' 这类 ASCII 元数据串比下去。
     try:
-        candidates = re.findall(rb'[\x20-\x7e\xc2-\xf4][\x80-\xbf\x20-\x7e]{1,}', blob)
+        candidates = re.findall(rb'[\x20-\x7e\xc2-\xf4][\x80-\xbf\x20-\x7e\xc2-\xf4]{1,}', blob)
         best = b''
         for cand in candidates:
             if len(cand) > len(best):
@@ -134,15 +139,25 @@ class DatabaseThread(threading.Thread):
                 if not self.connect():
                     return
 
-            # 1) 有 pending：拉一轮新消息并入 pending，游标推进
-            # 2) 无 pending：拉一轮新消息（如有），游标推进
-            # 关键：游标只要查过就推，不再依赖 callback ack
+            # 拉一轮新消息并入 pending；游标按“实际取到的行”的最大时间推进：
+            #  - 查询失败(None) → 不推进，下轮重试，避免消息静默丢失
+            #  - 有新行 → 推进到已取行的 max(original_date)，消除 get_latest 与 fetch 之间的
+            #            TOCTOU 重复投递（中途落库的消息也会被 fetch 到并一并推进游标）
+            #  - 无新行 → 推进到 current_latest，避免被 is_from_me/已过滤的行卡住
             current_latest_date = self.get_latest_message_date()
             if current_latest_date and (self.last_message_date is None or current_latest_date > self.last_message_date):
                 fresh = self._fetch_new_messages()
-                if fresh:
+                if fresh is None:
+                    pass  # 查询失败，保持游标不动
+                elif fresh:
                     self.pending_messages.extend(fresh)
-                self.last_message_date = current_latest_date
+                    try:
+                        max_orig = max(int(m['original_date']) for m in fresh if m.get('original_date') is not None)
+                        self.last_message_date = max(self.last_message_date or 0, max_orig)
+                    except Exception:
+                        self.last_message_date = current_latest_date
+                else:
+                    self.last_message_date = current_latest_date
 
             # 3) 把 pending 喂给 callback，ack 才清空
             if self.callback and self.pending_messages:
@@ -200,7 +215,7 @@ class DatabaseThread(threading.Thread):
             df = pd.read_sql_query(query, self.connection, params=(self.last_message_date if self.last_message_date else 0,))
         except Exception as e:
             print(f"查询新消息 SQL 出错: {e}")
-            return []
+            return None  # None 表示查询失败（区别于“无新消息”的 []），调用方据此不推进游标
 
         result = []
         for _, row in df.iterrows():
@@ -278,6 +293,7 @@ class iMessageReader:
         self.db_path = os.path.expanduser("~/Library/Messages/chat.db")
         self.observer = None  # 添加 observer 属性
         self.db_thread = None  # 添加 db_thread 属性
+        self._stop = threading.Event()  # monitor_messages 的退出信号
         
     def check_db_access(self):
         """检查数据库文件是否存在且可访问"""
@@ -307,7 +323,8 @@ class iMessageReader:
         if not self.check_db_access():
             print("无法访问 iMessage 数据库，请确保已授予权限")
             return
-            
+
+        self._stop.clear()  # 支持停止后重新启动
         # 创建事件队列
         event_queue = queue.Queue()
         
@@ -331,7 +348,7 @@ class iMessageReader:
         
         try:
             self.observer.start()
-            while True:
+            while not self._stop.is_set():  # 收到停止信号即退出，线程不再泄漏
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("\n停止监控消息")
@@ -340,6 +357,7 @@ class iMessageReader:
     def stop(self):
         """停止监控"""
         print("正在停止 iMessage 监控...")
+        self._stop.set()  # 让 monitor_messages 的循环退出
         if self.observer:
             print("停止文件系统观察者...")
             self.observer.stop()
@@ -358,6 +376,7 @@ if __name__ == "__main__":
     # 使用示例
     def on_new_message(messages):
         print(f"收到 {len(messages)} 条新消息！")
-    
+        return True  # 必须返回真值，否则 reader 会保留 pending 反复重发
+
     reader = iMessageReader()
     reader.monitor_messages(callback=on_new_message) 

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>iMessage-Dify 用户会话</title>
+    <title>iMessage Agent 用户</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <style>
         body {
@@ -19,7 +19,7 @@
 </head>
 <body>
     <div class="container">
-        <h1 class="text-center mb-4">iMessage-Dify 用户会话</h1>
+        <h1 class="text-center mb-4">iMessage Agent 用户</h1>
         
         <div class="row mb-3">
             <div class="col-12">
@@ -44,33 +44,29 @@
                             <tr>
                                 <th>电话号码</th>
                                 <th>用户ID</th>
-                                <th>会话ID</th>
+                                <th>对话历史</th>
+                                <th>长期记忆</th>
                                 <th>最后活动时间</th>
                                 <th>操作</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {% for phone, session in sessions.items() %}
+                            {% for s in sessions %}
                             <tr>
-                                <td>{{ phone }}</td>
-                                <td>{{ session.user_id }}</td>
-                                <td>
-                                    {% if session.conversation_id %}
-                                    <span class="text-success">{{ session.conversation_id[:10] }}...</span>
-                                    {% else %}
-                                    <span class="text-muted">无会话</span>
-                                    {% endif %}
-                                </td>
-                                <td>{{ session.last_active }}</td>
+                                <td>{{ s.phone }}</td>
+                                <td>{{ s.user_id }}</td>
+                                <td>{{ s.history_len }} 条</td>
+                                <td>{% if s.memory_bytes %}{{ s.memory_bytes }} B{% else %}<span class="text-muted">无</span>{% endif %}</td>
+                                <td>{{ s.last_active or '-' }}</td>
                                 <td>
                                     <div class="btn-group" role="group">
-                                        <form action="/reset_user_session/{{ phone }}" method="post" class="d-inline">
-                                            <button type="submit" class="btn btn-sm btn-warning me-1">重置会话</button>
+                                        <form action="/reset_user_session/{{ s.phone }}" method="post" class="d-inline">
+                                            <button type="submit" class="btn btn-sm btn-warning me-1">清空历史</button>
                                         </form>
-                                        <button type="button" class="btn btn-sm btn-danger" 
-                                                data-bs-toggle="modal" 
-                                                data-bs-target="#deleteModal" 
-                                                data-phone="{{ phone }}">
+                                        <button type="button" class="btn btn-sm btn-danger"
+                                                data-bs-toggle="modal"
+                                                data-bs-target="#deleteModal"
+                                                data-phone="{{ s.phone }}">
                                             删除用户
                                         </button>
                                     </div>
@@ -90,20 +86,19 @@
         
         <div class="card">
             <div class="card-header">
-                <h5>关于用户会话</h5>
+                <h5>关于每用户 Agent</h5>
             </div>
             <div class="card-body">
-                <p>系统会为每个iMessage用户自动创建独立的会话，包括：</p>
+                <p>每个 iMessage 用户拥有一个逻辑隔离的 Agent：</p>
                 <ul>
-                    <li><strong>用户ID</strong>：用于在Dify中唯一标识用户</li>
-                    <li><strong>会话ID</strong>：用于保持与Dify的对话上下文</li>
+                    <li><strong>对话历史</strong>：该用户独立的多轮上下文（本地持久化）</li>
+                    <li><strong>长期记忆</strong>：Agent 用记忆工具记下的跨会话信息</li>
                 </ul>
-                <p>这样每个用户都能拥有独立的对话历史，提供更个性化的体验。</p>
-                <p class="text-muted">注意：</p>
+                <p class="text-muted">操作说明：</p>
                 <ul class="text-muted">
-                    <li>重置会话：清除用户的对话历史，下次对话将从头开始，但保留用户ID</li>
-                    <li>删除用户：完全删除用户的所有数据，包括用户ID和会话历史</li>
-                    <li>清空所有用户数据：删除系统中所有用户的数据，所有用户将重新开始</li>
+                    <li>清空历史：清除该用户的对话历史（保留长期记忆）</li>
+                    <li>删除用户：删除该用户的对话历史、映射与长期记忆（彻底清除，不会残留）</li>
+                    <li>清空所有：删除全部用户的对话历史、映射与长期记忆</li>
                 </ul>
             </div>
         </div>

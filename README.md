@@ -1,68 +1,61 @@
-# iMessage-Dify 集成
+# iMessage Agent
 
-这个项目将 iMessage 与 Dify AI 平台集成，允许自动处理和回复 iMessage 消息。
+把 iMessage 变成一个**每用户独立的 AI Agent**：每个联系人拥有自己逻辑隔离的 agent
+（独立对话历史、长期记忆、工具状态，互不阻塞并发），agent 通过自研的轻量 harness
+自主调用工具。LLM 后端可在 **Anthropic Claude** 与 **OpenAI 兼容接口（DeepSeek / Qwen / GLM 等）**
+之间切换。
 
-## 功能特点
+## 功能
 
-- 使用 Flask 构建的简单 Web 界面
-- 配置 Dify API URL 和 API 密钥
-- 自动检测新的 iMessage 消息
-- 使用 Dify AI 处理消息内容
-- 通过 AppleScript 自动回复消息
-- 可配置的消息检查间隔
+- 每用户独立 Agent：独立历史 + 独立长期记忆 + 独立工具状态，不同用户并发处理
+- 双后端可切换：Anthropic 官方 API / 任意 OpenAI 兼容端点（配 base_url）
+- 自研工具调用循环（harness），provider 无关
+- 工具：
+  - **联网搜索**：用大模型自带能力（Anthropic 原生 server tool / OpenAI 端点自带搜索）
+  - **长期记忆**：跨会话记住用户偏好与事实
+  - **定时提醒 / 任务**：到点主动给用户发 iMessage
+  - **BT 资源搜索**：返回标题 / 大小 / 做种数 + 磁力链接
+- Web 管理后台：配置后端与工具、查看每用户 agent 状态、看日志
 
 ## 系统要求
 
-- macOS 系统（需要 iMessage 支持）
-- Python 3.6+
-- 终端应用需要完全磁盘访问权限（用于读取 iMessage 数据库）
+- macOS（需 iMessage）
+- Python 3.9+
+- 终端需「完全磁盘访问权限」以读取 iMessage 数据库
 
-## 安装和使用
-
-1. 克隆或下载此仓库
-2. 运行启动脚本：
+## 安装与使用
 
 ```bash
 chmod +x run.sh
 source run.sh
 ```
 
-3. 在浏览器中访问 http://localhost:8877
-4. 配置 Dify API URL 和 API 密钥
-5. 点击"测试连接"确保配置正确
-6. 点击"启动服务"开始监听新消息
+然后浏览器打开 http://localhost:8877：
+
+1. 选择 Provider（Anthropic 或 OpenAI 兼容），填 API Key / Base URL / 模型
+2. 勾选需要的工具，保存配置
+3. 「测试连接」确认后端可用
+4. 「启动服务」开始监听 iMessage
 
 ## 授予磁盘访问权限
 
-要读取 iMessage 数据库，您需要授予终端应用完全磁盘访问权限：
+系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 添加你的终端（Terminal / iTerm）并重启终端。
 
-1. 打开系统偏好设置
-2. 前往安全性与隐私 > 隐私 > 完全磁盘访问权限
-3. 点击锁图标并输入密码以进行更改
-4. 点击"+"按钮并添加您的终端应用（Terminal 或 iTerm）
-5. 重启终端应用
+## 架构
 
-## 配置 Dify
+```
+imessage_reader.py   读 chat.db，检测新消息（回调契约：list→truthy ack）
+app.py               Flask 路由 + 线程编排 + 回调分发
+providers/           LLM 后端抽象（base / anthropic / openai）
+agent/               harness（工具循环）/ session（单用户）/ manager（并发调度）
+tools/               memory / reminder / torrent（联网搜索在 providers 层）
+config.py            配置（config.json）
+```
 
-1. 在 [Dify](https://dify.ai) 创建一个应用
-2. 获取 API 密钥（选择"对话"类型的应用）
-3. 将 API URL 和密钥配置到本应用中
+数据落在 `agent_state/`（每用户历史、记忆、提醒，已 gitignore）。
 
-## 工作原理
+## 说明
 
-1. 应用定期检查 iMessage 数据库中的新消息
-2. 当检测到新消息时，将消息内容发送到 Dify API 进行处理
-3. 获取 Dify 的回复
-4. 使用 AppleScript 通过 iMessage 发送回复
-
-## 注意事项
-
-- 此应用仅在 macOS 上运行
-- 需要完全磁盘访问权限才能读取 iMessage 数据库
-- 首次运行时，可能需要重置消息 ID 以处理现有消息
-
-## 故障排除
-
-- 如果无法访问 iMessage 数据库，请确保已授予终端应用完全磁盘访问权限
-- 如果 Dify 连接测试失败，请检查 API URL 和密钥是否正确
-- 如果消息未被处理，尝试点击"重置消息 ID"按钮 
+- 每用户 agent 状态可在「查看用户 Agent」页面查看/清理
+- 消息检测支持文件监控（实时，推荐）或定时查询
+- 发送失败会进重试队列，后台线程周期重试
