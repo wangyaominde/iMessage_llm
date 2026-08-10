@@ -106,8 +106,12 @@ class AgentManager:
 
     def get_registry(self):
         c = self.config
+        # 带上 provider 与搜索后端：换后端会改变是否注册客户端 web 工具，缓存不能陈旧
         sig = (bool(c.get('enable_web_search')), bool(c.get('enable_memory')),
-               bool(c.get('enable_reminder')), bool(c.get('enable_torrent')))
+               bool(c.get('enable_reminder')), bool(c.get('enable_torrent')),
+               (c.get('provider') or '').lower(), (c.get('search_backend') or ''),
+               bool((c.get('search_api_key') or '').strip()),
+               (c.get('openai_search_param') or '').strip())  # 影响是否注册客户端 web 工具
         with self._registry_lock:
             if self._registry_cache and self._registry_cache[0] == sig:
                 return self._registry_cache[1]

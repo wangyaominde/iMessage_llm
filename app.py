@@ -140,6 +140,21 @@ def deliver(phone, text):
 # ---- 工具注册表（按配置构造；memory/reminder/torrent 在后续阶段接入）----
 def build_registry():
     reg = ToolRegistry()
+    # 联网搜索的三种情况：
+    #  1) Anthropic：有原生 server tool，交给 provider 层，这里不注册
+    #  2) OpenAI 兼容端点且填了「联网搜索参数名」（如 MiniMax 的 web_search_linkup）：
+    #     用端点自带搜索，这里也不注册，免得两套搜索打架
+    #  3) 其余（多数 OpenAI 兼容端点没有内置搜索）：注册客户端工具，换模型也不丢联网能力
+    try:
+        if config.get('enable_web_search'):
+            provider = (config.get('provider') or '').lower()
+            has_native = (provider == 'anthropic') or bool((config.get('openai_search_param') or '').strip())
+            if not has_native:
+                from tools.web import make_web_tools
+                for t in make_web_tools():
+                    reg.register(t)
+    except Exception as e:
+        print(f"注册 web 工具失败: {e}")
     try:
         if config.get('enable_memory'):
             from tools.memory import make_memory_tools
@@ -280,6 +295,7 @@ def save_config_route():
     upd('provider')
     upd('anthropic_api_key'); upd('anthropic_model'); upd('anthropic_base_url')
     upd('openai_api_key'); upd('openai_base_url'); upd('openai_model'); upd('openai_search_param')
+    upd('search_backend'); upd('search_api_key')
     # agent
     upd('system_prompt')
     upd('max_tokens', cast=int); upd('max_iters', cast=int); upd('history_limit', cast=int)

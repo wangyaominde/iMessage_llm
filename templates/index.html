@@ -68,9 +68,13 @@
                                 <input type="text" class="form-control" name="openai_model" value="{{ config.openai_model }}" placeholder="deepseek-chat">
                             </div>
                             <div class="mb-0">
-                                <label class="form-label">联网搜索参数名（可选）</label>
-                                <input type="text" class="form-control" name="openai_search_param" value="{{ config.openai_search_param }}" placeholder="留空则不启用（Qwen/DashScope 填 enable_search）">
-                                <div class="form-text">仅支持该字段的端点才填；DeepSeek/OpenAI 等留空，否则会 400。</div>
+                                <label class="form-label">端点自带搜索的参数名（可选）</label>
+                                <input type="text" class="form-control" name="openai_search_param" value="{{ config.openai_search_param }}" placeholder="留空 = 用内置搜索工具">
+                                <div class="form-text">
+                                    端点自己支持联网时才填，会作为布尔参数随请求发送：
+                                    MiniMax M3 填 <code>web_search_linkup</code>，Qwen/DashScope 填 <code>enable_search</code>。
+                                    <strong>留空则使用内置的客户端搜索工具（免 key，任何后端通用）</strong>；填错会导致端点报 400。
+                                </div>
                             </div>
                         </div>
 
@@ -96,7 +100,24 @@
 
                         <label class="form-label fw-bold">工具</label>
                         <div class="mb-3">
-                            <div class="form-check"><input class="form-check-input" type="checkbox" name="enable_web_search" id="t_web" {% if config.enable_web_search %}checked{% endif %}><label class="form-check-label" for="t_web">联网搜索（用大模型自带能力）</label></div>
+                            <div class="form-check"><input class="form-check-input" type="checkbox" name="enable_web_search" id="t_web" {% if config.enable_web_search %}checked{% endif %}><label class="form-check-label" for="t_web">联网搜索</label>
+                                <div class="form-text">Anthropic 用其原生搜索；其它后端（MiniMax/DeepSeek 等）用内置的客户端搜索工具，换模型不影响。</div>
+                            </div>
+                            <div class="row mt-2 mb-2">
+                                <div class="col">
+                                    <label class="form-label">搜索服务商（可选）</label>
+                                    <select class="form-select" name="search_backend">
+                                        <option value="" {% if not config.search_backend %}selected{% endif %}>DuckDuckGo（免 key，默认）</option>
+                                        <option value="serper" {% if config.search_backend == 'serper' %}selected{% endif %}>Serper</option>
+                                        <option value="tavily" {% if config.search_backend == 'tavily' %}selected{% endif %}>Tavily</option>
+                                        <option value="brave" {% if config.search_backend == 'brave' %}selected{% endif %}>Brave</option>
+                                    </select>
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">搜索 API Key（可选）</label>
+                                    <input type="password" class="form-control" name="search_api_key" value="{{ config.search_api_key }}" placeholder="留空则用免 key 搜索">
+                                </div>
+                            </div>
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="enable_memory" id="t_mem" {% if config.enable_memory %}checked{% endif %}><label class="form-check-label" for="t_mem">长期记忆</label></div>
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="enable_reminder" id="t_rem" {% if config.enable_reminder %}checked{% endif %}><label class="form-check-label" for="t_rem">定时提醒 / 任务</label></div>
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="enable_torrent" id="t_tor" {% if config.enable_torrent %}checked{% endif %}><label class="form-check-label" for="t_tor">BT 资源搜索</label></div>

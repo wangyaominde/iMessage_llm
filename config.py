@@ -38,7 +38,11 @@ DEFAULT_CONFIG = {
     'reply_in_groups': False,       # 是否在群聊里回复（默认关：否则会给群里每个发言人发私信）
 
     # ---- 工具开关 ----
-    'enable_web_search': True,      # provider 原生联网搜索
+    'enable_web_search': True,      # 联网搜索总开关
+    # 客户端搜索后端（非 Anthropic 后端使用）：留空=免 key 的 DuckDuckGo；
+    # 也可填 serper / tavily / brave 并配上 search_api_key 提升质量。
+    'search_backend': '',
+    'search_api_key': '',
     'enable_memory': True,
     'enable_reminder': True,
     'enable_torrent': True,

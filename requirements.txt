@@ -5,4 +5,5 @@ pandas
 anthropic
 openai
 pillow
-pillow-heif 
+pillow-heif
+beautifulsoup4 
