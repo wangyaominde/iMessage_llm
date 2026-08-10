@@ -3,4 +3,4 @@
 /venv
 user_sessions.json
 dify_file/.DS_Store
-user_sessions.json
+app.log
