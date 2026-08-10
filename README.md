@@ -20,6 +20,7 @@ LLM 后端做了**双后端抽象**，可在后台一键切换：
 - [Harness 是怎么设计的](#harness-是怎么设计的)
 - [每用户隔离与并发模型](#每用户隔离与并发模型)
 - [工具](#工具)
+- [联网搜索怎么工作](#联网搜索怎么工作)
 - [安全设计（防乱发 / 防泄漏）](#安全设计防乱发--防泄漏)
 - [数据与持久化](#数据与持久化)
 - [目录结构](#目录结构)
@@ -30,7 +31,7 @@ LLM 后端做了**双后端抽象**，可在后台一键切换：
 ## 能干什么
 
 - **一对一 AI 对话**：联系人发消息 → AI 回复，保持多轮上下文。
-- **联网搜索**：用大模型自带的联网能力（Anthropic 原生 web_search / web_fetch；OpenAI 端点自带搜索），查最新信息后回答。
+- **联网搜索**：查最新信息后回答，并给出来源网址。**免 key 开箱即用**（内置客户端搜索工具，默认走 DuckDuckGo），换任何后端都不会失效；端点本身支持联网时也可改用其原生能力。详见[联网搜索怎么工作](#联网搜索怎么工作)。
 - **长期记忆**：跨会话记住用户的偏好和事实（"我是程序员""叫我老王"），下次对话自动带上。
 - **定时提醒 / 任务**："十分钟后提醒我喝水""明早八点叫我" → 到点主动给用户发 iMessage。
 - **BT 资源搜索**：找影视 / 软件的磁力链接，返回标题、大小、做种数。
@@ -80,7 +81,8 @@ source run.sh          # 首次会自动建 venv、装依赖、启动
 | 后端 | `provider` | `anthropic` 或 `openai`，决定当前生效的后端（两套配置都保存，随时切） |
 | Anthropic | `anthropic_api_key` / `anthropic_model` / `anthropic_base_url` | 默认模型 `claude-opus-5` |
 | OpenAI 兼容 | `openai_api_key` / `openai_base_url` / `openai_model` | 如 `https://api.deepseek.com/v1` + `deepseek-chat` |
-| OpenAI 搜索 | `openai_search_param` | 端点开启联网搜索的参数名，**默认空=不注入**（Qwen/DashScope 才填 `enable_search`，否则给 DeepSeek/OpenAI 塞未知字段会 400） |
+| 搜索 | `openai_search_param` | 端点**自带**联网搜索的参数名，**默认空 = 用内置搜索工具**。MiniMax M3 可试 `web_search_linkup`，Qwen/DashScope 填 `enable_search`；填错会 400 |
+| 搜索 | `search_backend` / `search_api_key` | 内置搜索工具用哪家：留空 = 免 key 的 DuckDuckGo；也可选 `serper` / `tavily` / `brave` 并配 key 提升质量 |
 | Agent | `system_prompt` | 自定义系统提示词，留空用内置人设 |
 | Agent | `max_tokens` / `max_iters` / `history_limit` | 单次输出上限 / 工具循环上限 / 每用户保留的历史条数 |
 | 工具 | `enable_web_search` / `enable_memory` / `enable_reminder` / `enable_torrent` | 各工具开关 |
@@ -120,6 +122,7 @@ flowchart TB
     end
 
     subgraph TOOLS["工具层 (客户端执行)"]
+        Web[web_search / web_fetch<br/>免key DuckDuckGo]
         Mem[memory<br/>remember/recall]
         Rem[reminder<br/>create/list/cancel]
         Tor[torrent_search]
@@ -127,7 +130,7 @@ flowchart TB
 
     CB --> Mgr --> Sess --> Harness
     Harness --> Base --> Anth & OAI
-    Harness --> Mem & Rem & Tor
+    Harness --> Web & Mem & Rem & Tor
     Sess -->|回复| Sender
     Mgr -->|发送失败| Retry --> Sender
     Sched -->|到点提醒| Mgr
@@ -141,7 +144,7 @@ flowchart TB
 | **编排** | `app.py` | Flask 路由、线程编排、回调分发、发送重试队列、提醒调度线程 |
 | **Agent** | `agent/` | `manager`（每用户调度）+ `session`（单用户状态）+ `harness`（工具循环） |
 | **Provider** | `providers/` | 把不同 LLM 后端归一化成同一套 `Message/ToolCall/LLMResponse` 接口 |
-| **工具** | `tools/` | 客户端执行的自研工具；联网搜索是 provider 原生能力，不在这层 |
+| **工具** | `tools/` | 客户端执行的自研工具（联网搜索 / 记忆 / 提醒 / BT），provider 无关 |
 | **辅助** | `text_format.py` / `image_prep.py` / `config.py` | 出站 Markdown 清洗 / 图片预处理 / 配置 |
 
 ---
@@ -188,7 +191,7 @@ loop（上限 max_iters，默认 8）：
 
 Harness 存的是归一化 `Message`；每个 provider 在 `chat()` 里翻译成自家格式：
 
-- **Anthropic**：`system` 单独提取；assistant 轮翻成 content-block（`text` + `tool_use`）；连续的 `tool` 结果合并成一个 `user` 轮的 `tool_result` 块。**联网搜索用原生 server tool**（`web_search_20260209` / `web_fetch_20260209`），并处理 `pause_turn` 续跑。
+- **Anthropic**：`system` 单独提取；assistant 轮翻成 content-block（`text` + `tool_use`）；连续的 `tool` 结果合并成一个 `user` 轮的 `tool_result` 块。可挂**原生 server tool** 做联网（`web_search_20260209` / `web_fetch_20260209`），并处理 `pause_turn` 续跑。
 - **OpenAI**：直接映射成 `messages` + `tools=[{type:function}]` + `tool_calls`；剥离推理模型的 `<think>` 块。
 
 为了在同一轮的多次工具往返里**不丢模型的思维链 / server 工具块**，assistant 轮会把 provider 的原生表示存进 `Message.raw`（转成可 JSON 持久化的 dict），下一次请求时**忠实回放**。跨 provider 时（`raw_provider` 不匹配）自动降级成用纯文本重建，避免把 Anthropic 的块喂给 OpenAI。
@@ -227,7 +230,7 @@ Harness 存的是归一化 `Message`；每个 provider 在 `chat()` 里翻译成
 | **memory** | `remember(fact)` 记长期事实、`recall(query)` 检索。写入即被下一轮 system 摘要读到 |
 | **reminder** | `create_reminder`（绝对时间或相对分钟）、`list_reminders`、`cancel_reminder`。到点由调度线程触发，让该用户的 agent 生成话术并主动发出 |
 | **torrent** | `torrent_search(query)`：查公开 BT 索引，返回标题 / 大小 / 做种数 + 磁力链接 |
-| **联网搜索** | 不是这层的工具，而是 **provider 原生能力**（见 Harness 双后端部分），后台 `enable_web_search` 开关 |
+| **web** | `web_search(query)`：联网搜索，返回标题 / 摘要 / **来源网址**；`web_fetch(url)`：读取网页正文。默认免 key（DuckDuckGo），可选 Serper / Tavily / Brave。见[联网搜索怎么工作](#联网搜索怎么工作) |
 
 > 扩展工具：继承 `tools/base.py` 的 `Tool`（定义 `name` / `description` / `parameters` / `run`），在 `app.py:build_registry` 注册即可。
 
@@ -236,6 +239,26 @@ Harness 存的是归一化 `Message`；每个 provider 在 `chat()` 里翻译成
 - **交付成功才标完成**：先置 `firing` 中间态，agent 生成并发送成功后才标 `done`；失败清 `firing`，下轮重试——不会"标了 done 结果没发出去"。
 - **重启不轰炸**：过期超过 30 分钟宽限的提醒直接标 `missed` 不补发，避免停机后重启一次性爆发。
 - **只发给本人**：提醒只发回给设置它的 `ctx.phone`，模型无法指定他人。
+
+---
+
+## 联网搜索怎么工作
+
+联网搜索**写在 harness 层（客户端工具）**，而不是依赖模型自带能力——因为只有部分后端有原生联网：Anthropic 有 server tool，而 MiniMax / DeepSeek 等多数 OpenAI 兼容端点没有内置搜索，一旦换过去联网能力就整个消失。放进 harness 后与模型解耦，换任何后端都在。
+
+`build_registry` 按三种情况路由，保证同一时刻只有一套搜索生效、不会打架：
+
+| 情况 | 走哪套 |
+|---|---|
+| Provider = Anthropic | 用其**原生 server tool**（`web_search_20260209` / `web_fetch_20260209`），不注册客户端工具 |
+| OpenAI 兼容端点，且填了「端点自带搜索的参数名」 | 用**端点自带**搜索（作为布尔参数随请求发出），不注册客户端工具 |
+| 其余（默认） | 注册**客户端 `web_search` / `web_fetch`**，免 key |
+
+端点自带搜索的参数名是端点相关的：**MiniMax M3** 可试 `web_search_linkup`（Linkup 提供，按次计费），**Qwen / DashScope** 用 `enable_search`。不确定就留空——留空一定能用。
+
+> 关于 MiniMax：它的 `minimax_search` MCP 是本地 stdio 服务、只面向编程助手，**chat completions 接口调用不到**，且底层实际是 Serper 的 Google 搜索 + Jina 抓正文（需三把 key）。所以本项目不走 MCP；要么用端点自带的布尔参数，要么用内置客户端工具。
+
+搜索结果始终带来源网址，配合系统提示词里「说明信息来源」的要求。
 
 ---
 
@@ -288,6 +311,7 @@ agent/                 每用户 Agent
 
 tools/                 客户端工具
   base.py                Tool / ToolContext / ToolRegistry（异常隔离的 dispatch）
+  web.py                 web_search / web_fetch（免 key DuckDuckGo，可选 Serper/Tavily/Brave）
   memory.py / reminder.py / torrent.py
 
 text_format.py         出站 Markdown 清洗（iMessage 不渲染 MD）
@@ -304,7 +328,8 @@ templates/             后台页面（配置 / 用户 Agent 列表）
 |---|---|
 | 提示无法访问 iMessage 数据库 | 终端没给「完全磁盘访问权限」，加完要**重启终端** |
 | 机器人不回复 | 后台没配好 provider（首页状态里 provider 显示"未就绪"）/ 服务没启动 |
-| OpenAI 端点每条都报 400 | 该端点不认识 `enable_search`——把「联网搜索参数名」清空 |
+| OpenAI 端点每条都报 400 | 该端点不认识你填的搜索参数——把「端点自带搜索的参数名」清空，改用内置搜索工具 |
+| 换了后端就不会联网了 | 应该不会再发生（搜索在 harness 层）。若发生，检查「联网搜索」开关是否被关掉 |
 | 回复里有一堆 `**` `#` | 理论上不会（出站强制清洗）；若自定义了 system_prompt 可提醒模型别用 Markdown |
 | 消息检测不及时 | 用文件监控模式（实时）；或调小检查间隔 |
 
