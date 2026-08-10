@@ -34,7 +34,7 @@ LLM 后端做了**双后端抽象**，可在后台一键切换：
 - **联网搜索**：查最新信息后回答，并给出来源网址。**免 key 开箱即用**（内置客户端搜索工具，默认走 DuckDuckGo），换任何后端都不会失效；端点本身支持联网时也可改用其原生能力。详见[联网搜索怎么工作](#联网搜索怎么工作)。
 - **长期记忆**：跨会话记住用户的偏好和事实（"我是程序员""叫我老王"），下次对话自动带上。
 - **定时提醒 / 任务**："十分钟后提醒我喝水""明早八点叫我" → 到点主动给用户发 iMessage。
-- **BT 资源搜索**：找影视 / 软件的磁力链接，返回标题、大小、做种数。
+- **影视资源搜索**：四个源并行查（apibay / solidtorrents / YTS / nyaa）后合并去重，按画质排序、标注中文音轨字幕，返回磁力链接。
 - **图片理解**：直接发图片（含 iPhone 的 HEIC），自动转码后交给多模态模型识别。
 - **Web 管理后台**：配置后端与工具、查看每个用户的 Agent 状态、看运行日志。
 
@@ -229,7 +229,7 @@ Harness 存的是归一化 `Message`；每个 provider 在 `chat()` 里翻译成
 |---|---|
 | **memory** | `remember(fact)` 记长期事实、`recall(query)` 检索。写入即被下一轮 system 摘要读到 |
 | **reminder** | `create_reminder`（绝对时间或相对分钟）、`list_reminders`、`cancel_reminder`。到点由调度线程触发，让该用户的 agent 生成话术并主动发出 |
-| **torrent** | `torrent_search(query)`：查公开 BT 索引，返回标题 / 大小 / 做种数 + 磁力链接 |
+| **torrent** | `torrent_search(query)`：影视 / 剧集资源搜索。**四源并行**（apibay / solidtorrents / YTS / nyaa）合并去重——单查 apibay 对日剧、国产片常年 0 结果。按画质排序（4K REMUX > 4K HDR/DV > 1080p BluRay > WEB，720p 默认沉底），标注国语/中字/双音轨并在同画质下优先，返回磁力链接。中文片名需先换算成「英文片名 + 年份」（工具说明里已写明） |
 | **web** | `web_search(query)`：联网搜索，返回标题 / 摘要 / **来源网址**；`web_fetch(url)`：读取网页正文。默认免 key（DuckDuckGo），可选 Serper / Tavily / Brave。见[联网搜索怎么工作](#联网搜索怎么工作) |
 
 > 扩展工具：继承 `tools/base.py` 的 `Tool`（定义 `name` / `description` / `parameters` / `run`），在 `app.py:build_registry` 注册即可。
