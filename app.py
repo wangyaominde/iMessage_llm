@@ -296,6 +296,7 @@ def save_config_route():
         config['enable_reminder'] = 'enable_reminder' in f
         config['enable_torrent'] = 'enable_torrent' in f
         config['use_system_watcher'] = 'use_system_watcher' in f
+        config['reply_in_groups'] = 'reply_in_groups' in f
 
     save_config()
     add_log("配置已保存", 'success')

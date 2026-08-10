@@ -130,9 +130,12 @@ class AgentManager:
 
     # ---- reader 回调入口：接收一批消息，按用户入队串行处理 ----
     def dispatch_batch(self, messages: list[dict]) -> bool:
+        reply_in_groups = bool(self.config.get('reply_in_groups'))
         for msg in messages:
             if msg.get('is_from_me'):
-                continue
+                continue  # 不回复自己发出去的消息（含机器人自己的回复），避免死循环
+            if msg.get('group_chat') and not reply_in_groups:
+                continue  # 默认不回群聊：否则会给群里每个发言人发私信 → 乱发
             text = msg.get('text') or ''
             atts = msg.get('attachments') or []
             images = [a['path'] for a in atts if a.get('exists') and a.get('path')]

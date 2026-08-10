@@ -34,6 +34,9 @@ DEFAULT_CONFIG = {
     'max_iters': 8,                 # harness 工具循环上限
     'history_limit': 24,            # 每用户保留最近 N 条消息
 
+    # ---- 安全 ----
+    'reply_in_groups': False,       # 是否在群聊里回复（默认关：否则会给群里每个发言人发私信）
+
     # ---- 工具开关 ----
     'enable_web_search': True,      # provider 原生联网搜索
     'enable_memory': True,

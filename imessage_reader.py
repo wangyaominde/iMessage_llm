@@ -140,12 +140,19 @@ class DatabaseThread(threading.Thread):
                     return
 
             # 拉一轮新消息并入 pending；游标按“实际取到的行”的最大时间推进：
+            #  - 读不到最新时间 → 跳过本轮
+            #  - 还没有基线(last is None) → 用当前最新“建立基线”，绝不回历史消息
+            #    （关键：否则 last=None 会让下面 fetch 退化成 WHERE date>0 = 全部历史 → 逐条乱回）
             #  - 查询失败(None) → 不推进，下轮重试，避免消息静默丢失
             #  - 有新行 → 推进到已取行的 max(original_date)，消除 get_latest 与 fetch 之间的
             #            TOCTOU 重复投递（中途落库的消息也会被 fetch 到并一并推进游标）
             #  - 无新行 → 推进到 current_latest，避免被 is_from_me/已过滤的行卡住
             current_latest_date = self.get_latest_message_date()
-            if current_latest_date and (self.last_message_date is None or current_latest_date > self.last_message_date):
+            if not current_latest_date:
+                pass  # 读不到最新时间（如 DB 被锁），本轮跳过
+            elif self.last_message_date is None:
+                self.last_message_date = current_latest_date  # 建立基线，只处理之后到达的消息
+            elif current_latest_date > self.last_message_date:
                 fresh = self._fetch_new_messages()
                 if fresh is None:
                     pass  # 查询失败，保持游标不动
@@ -182,6 +189,9 @@ class DatabaseThread(threading.Thread):
 
     def _fetch_new_messages(self):
         """执行 SQL 查询并把结果转成消息 dict 列表（不入 pending）"""
+        # 安全兜底：没有有效游标时绝不拉取（否则 WHERE date>0 会把全部历史消息拉出来 → 乱回）
+        if not self.last_message_date:
+            return []
         query = """
                 SELECT
                     datetime(message.date/1000000000 + strftime('%s', '2001-01-01'), 'unixepoch', 'localtime') AS message_date,
