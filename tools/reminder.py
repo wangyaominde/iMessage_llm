@@ -109,6 +109,11 @@ class CreateReminderTool(Tool):
         }
         with _STORE_LOCK:
             items = _load(ctx.state_dir)
+            pending = [i for i in items
+                       if i.get('phone') == ctx.phone and not i.get('done') and not i.get('cancelled')]
+            if len(pending) >= MAX_PENDING_PER_USER:
+                return (f'设置失败：你已经有 {len(pending)} 条待触发的提醒，'
+                        f'达到上限（{MAX_PENDING_PER_USER}）。先取消一些再加。')
             items.append(item)
             _save(ctx.state_dir, items)
         when_str = datetime.fromtimestamp(fire_at).strftime('%Y-%m-%d %H:%M')
@@ -166,6 +171,12 @@ def make_reminder_tools() -> list:
 # 过期超过这个秒数的提醒不再补发（避免进程停机后重启时一次性轰炸用户），直接标记 missed
 MISSED_GRACE_SECONDS = 30 * 60
 
+# 每用户待触发提醒数量上限：防止模型被诱导批量建提醒，把提醒当成给用户刷屏的通道
+MAX_PENDING_PER_USER = 20
+
+# 单轮调度最多触发的提醒数：即便积压很多，也不会一次性连发一大串
+MAX_FIRE_PER_TICK = 3
+
 
 def scheduler_tick(manager) -> None:
     """由 app 的调度线程周期调用：触发到点提醒。"""
@@ -187,6 +198,8 @@ def scheduler_tick(manager) -> None:
                 i['missed'] = True
                 changed = True
                 continue
+            if len(due) >= MAX_FIRE_PER_TICK:
+                continue  # 本轮已达上限，剩下的留到下一轮，避免一次性连发一大串
             i['firing'] = True  # 中间态：已被本轮取走，交付成功后才置 done（见 mark_fired）
             due.append(i)
             changed = True
