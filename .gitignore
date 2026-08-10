@@ -1,7 +1,16 @@
+# Python
 __pycache__/
-/config.json
 /venv
-user_sessions.json
+
+# 配置（含 API key）
+/config.json
+
+# 用户数据（对话历史 / 长期记忆 / 提醒 / 手机号映射）—— 绝不入库
 /agent_state
+/data
+user_sessions.json
+
+# 日志与杂项
+*.log
+.DS_Store
 dify_file/.DS_Store
-app.log
