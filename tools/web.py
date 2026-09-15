@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 from typing import Optional
-from urllib.parse import quote_plus, urlparse, parse_qs, unquote
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urljoin
 
 import requests
 
@@ -21,6 +23,70 @@ UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML,
 TIMEOUT = 20
 MAX_RESULTS = 8
 MAX_PAGE_CHARS = 6000
+MAX_FETCH_BYTES = 2 * 1024 * 1024
+MAX_FETCH_REDIRECTS = 5
+_REDIRECT_STATUS = {301, 302, 303, 307, 308}
+
+
+def _ip_is_blocked(addr) -> bool:
+    """私网 / 回环 / 链路本地 / 组播 / 保留 / 未指定 / 非全局 一律拒绝。"""
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return bool(
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+        or (not addr.is_global)
+    )
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """SSRF 护栏：只允许 http(s) 且解析后全部地址为公网。"""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, 'URL 无效'
+    scheme = (parsed.scheme or '').lower()
+    if scheme not in ('http', 'https'):
+        return False, '仅允许 http/https'
+    host = (parsed.hostname or '').strip().rstrip('.').lower()
+    if not host:
+        return False, 'hostname 为空'
+    if host == 'localhost' or host.endswith(('.localhost', '.local', '.internal')):
+        return False, '禁止本机/内网主机名'
+    port = parsed.port or (443 if scheme == 'https' else 80)
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except Exception:
+        return False, 'DNS 解析失败'
+    if not infos:
+        return False, 'DNS 解析失败'
+    for info in infos:
+        sockaddr = info[4]
+        ip_str = sockaddr[0]
+        if '%' in ip_str:
+            ip_str = ip_str.split('%', 1)[0]
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except Exception:
+            return False, '地址无效'
+        if _ip_is_blocked(addr):
+            return False, '禁止内网/非公网地址'
+    return True, ''
+
+
+def _decode_body(raw: bytes, content_type: str) -> str:
+    charset = 'utf-8'
+    m = re.search(r'charset=([^\s;]+)', content_type or '', re.I)
+    if m:
+        charset = m.group(1).strip().strip('"').strip("'")
+    try:
+        return raw.decode(charset, errors='replace')
+    except Exception:
+        return raw.decode('utf-8', errors='replace')
 
 
 def _html_to_text(html: str) -> str:
@@ -186,22 +252,65 @@ class WebFetchTool(Tool):
         url = (url or '').strip()
         if not url:
             return '请提供网址。'
-        if not url.startswith(('http://', 'https://')):
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.scheme.lower() not in ('http', 'https'):
+            return '已拒绝：不允许访问内网 / 本机地址。'
+        if not parsed.scheme:
             url = 'https://' + url
+        ok, _reason = _is_safe_url(url)
+        if not ok:
+            return '已拒绝：不允许访问内网 / 本机地址。'
+
+        current = url
         try:
-            r = requests.get(url, headers={'User-Agent': UA}, timeout=TIMEOUT)
-            r.raise_for_status()
-            ctype = r.headers.get('content-type', '')
-            if 'html' not in ctype and 'text' not in ctype:
-                return f'该地址不是网页内容（{ctype}）。'
-            text = _html_to_text(r.text)
+            for hop in range(MAX_FETCH_REDIRECTS + 1):
+                ok, _reason = _is_safe_url(current)
+                if not ok:
+                    return '已拒绝：不允许访问内网 / 本机地址。'
+                r = requests.get(
+                    current, headers={'User-Agent': UA}, timeout=TIMEOUT,
+                    allow_redirects=False, stream=True,
+                )
+                try:
+                    if r.status_code in _REDIRECT_STATUS:
+                        loc = r.headers.get('Location') or r.headers.get('location') or ''
+                        if hop >= MAX_FETCH_REDIRECTS:
+                            return '读取网页失败：重定向过多。'
+                        if not loc:
+                            return '读取网页失败：重定向缺少 Location。'
+                        current = urljoin(current, loc)
+                        continue
+                    r.raise_for_status()
+                    ctype = r.headers.get('content-type', '') or r.headers.get('Content-Type', '')
+                    if 'html' not in ctype and 'text' not in ctype:
+                        return f'该地址不是网页内容（{ctype}）。'
+                    chunks: list[bytes] = []
+                    n = 0
+                    for part in r.iter_content(chunk_size=8192):
+                        if not part:
+                            continue
+                        if n + len(part) > MAX_FETCH_BYTES:
+                            chunks.append(part[:MAX_FETCH_BYTES - n])
+                            break
+                        chunks.append(part)
+                        n += len(part)
+                    raw = b''.join(chunks)
+                    text = _html_to_text(_decode_body(raw, ctype))
+                    if not text:
+                        return '这个网页没有可读正文。'
+                    clipped = text[:MAX_PAGE_CHARS]
+                    suffix = '\n\n（内容过长已截断）' if len(text) > MAX_PAGE_CHARS else ''
+                    return f'来源：{current}\n\n{clipped}{suffix}'
+                finally:
+                    closer = getattr(r, 'close', None)
+                    if closer:
+                        try:
+                            closer()
+                        except Exception:
+                            pass
+            return '读取网页失败：重定向过多。'
         except Exception as e:
             return f'读取网页失败：{e}'
-        if not text:
-            return '这个网页没有可读正文。'
-        clipped = text[:MAX_PAGE_CHARS]
-        suffix = '\n\n（内容过长已截断）' if len(text) > MAX_PAGE_CHARS else ''
-        return f'来源：{url}\n\n{clipped}{suffix}'
 
 
 def make_web_tools() -> list:

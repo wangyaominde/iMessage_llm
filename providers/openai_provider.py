@@ -144,3 +144,13 @@ class OpenAIProvider(LLMProvider):
             finish_reason=choice.finish_reason or '',
             usage=usage,
         )
+
+    def complete(self, prompt: str, max_tokens: int = 1024) -> str:
+        """裸补全：不传 tools / extra_body，避免摘要任务注入联网搜索。"""
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{'role': 'user', 'content': prompt}],
+            max_tokens=max_tokens,
+        )
+        content = resp.choices[0].message.content or ''
+        return _strip_think(content)

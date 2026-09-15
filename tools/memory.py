@@ -1,7 +1,7 @@
 """长期记忆工具（每用户独立）。
 
-记忆存 agent_state/memory/<user_id>/memory.md —— 与 AgentSession 注入 system 的 digest
-是同一个文件，所以 remember 写进去后，下一轮对话模型就能在 system 里看到。
+记忆存 agent_state/memory/<user_id>/memory.md；写入后刷新该用户 memory BM25。
+召回优先走 BM25，关键词 substring 作 fallback。
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from datetime import datetime
 
 from tools.base import Tool, ToolContext
 from agent.session import memory_dir_for, MEMORY_FILENAME
+from agent.rag import KIND_MEMORY, get_rag_store
 
 MAX_MEMORY_BYTES = 8000
 
@@ -18,6 +19,18 @@ def _mem_path(ctx: ToolContext) -> str:
     d = memory_dir_for(ctx.state_dir, ctx.user_id)
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, MEMORY_FILENAME)
+
+
+def _memory_lines(text: str) -> list[str]:
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def _refresh_memory_index(ctx: ToolContext, text: str):
+    try:
+        store = get_rag_store(ctx.state_dir)
+        store.rebuild(ctx.user_id, KIND_MEMORY, _memory_lines(text))
+    except Exception as e:
+        print(f"刷新 memory 索引失败 ({ctx.user_id}): {e}")
 
 
 class RememberTool(Tool):
@@ -51,6 +64,7 @@ class RememberTool(Tool):
             existing = ''.join(lines)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(existing)
+        _refresh_memory_index(ctx, existing)
         return f'已记住：{fact}'
 
 
@@ -73,8 +87,16 @@ class RecallTool(Tool):
         q = (query or '').strip()
         if not q:
             return text[-2000:]
-        hits = [ln for ln in text.splitlines() if q.lower() in ln.lower()]
-        return '\n'.join(hits) if hits else f'没有匹配“{q}”的记忆。'
+        # 优先 BM25（仅本用户 memory 索引）
+        try:
+            hits = get_rag_store(ctx.state_dir).search(ctx.user_id, KIND_MEMORY, q, top_k=8)
+            if hits:
+                return '\n'.join(hits)
+        except Exception:
+            pass
+        # fallback：子串匹配
+        lines = [ln for ln in text.splitlines() if q.lower() in ln.lower()]
+        return '\n'.join(lines) if lines else f'没有匹配“{q}”的记忆。'
 
 
 def make_memory_tools() -> list:

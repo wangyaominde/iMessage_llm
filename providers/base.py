@@ -104,6 +104,11 @@ class LLMProvider(ABC):
         """
         raise NotImplementedError
 
+    def complete(self, prompt: str, max_tokens: int = 1024) -> str:
+        """裸补全：不带 tools / thinking / 联网，供摘要等后台任务使用。"""
+        resp = self.chat([Message(role='user', content=prompt)], None)
+        return resp.text or ''
+
 
 def sanitize_history(messages: list[Message], allowed_client_names: set) -> list[Message]:
     """把引用了“当前不可用的客户端工具”的 assistant 轮降级为纯文本，并丢弃它对应的

@@ -196,3 +196,16 @@ class AnthropicProvider(LLMProvider):
             finish_reason=getattr(resp, 'stop_reason', '') or '',
             usage=usage,
         )
+
+    def complete(self, prompt: str, max_tokens: int = 1024) -> str:
+        """裸补全：不传 tools / thinking / system，避免摘要任务联网或开思考。"""
+        resp = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        parts: list[str] = []
+        for block in resp.content:
+            if getattr(block, 'type', None) == 'text':
+                parts.append(block.text or '')
+        return ''.join(parts).strip()

@@ -45,6 +45,7 @@
                                 <th>电话号码</th>
                                 <th>用户ID</th>
                                 <th>对话历史</th>
+                                <th>摘要/压缩</th>
                                 <th>长期记忆</th>
                                 <th>最后活动时间</th>
                                 <th>操作</th>
@@ -56,6 +57,10 @@
                                 <td>{{ s.phone }}</td>
                                 <td>{{ s.user_id }}</td>
                                 <td>{{ s.history_len }} 条</td>
+                                <td>
+                                    {% if s.needs_compress %}<span class="badge text-bg-warning">待压缩</span>{% endif %}
+                                    {% if s.has_summary %}<span class="badge text-bg-secondary">有摘要</span>{% else %}<span class="text-muted">-</span>{% endif %}
+                                </td>
                                 <td>{% if s.memory_bytes %}{{ s.memory_bytes }} B{% else %}<span class="text-muted">无</span>{% endif %}</td>
                                 <td>{{ s.last_active or '-' }}</td>
                                 <td>

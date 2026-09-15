@@ -16,6 +16,7 @@ from typing import Callable, Optional
 
 from providers.base import build_provider
 from agent.session import AgentSession, memory_dir_for
+from agent.rag import get_rag_store
 
 
 class AgentManager:
@@ -128,7 +129,7 @@ class AgentManager:
                 uid = self._generate_user_id(phone)
                 self.index[phone] = uid
                 self._save_index()
-            sess = AgentSession(phone, uid, self.state_dir, int(self.config.get('history_limit', 24)))
+            sess = AgentSession(phone, uid, self.state_dir, int(self.config.get('history_limit', 60)))
             self._sessions[phone] = sess
             return sess
 
@@ -239,21 +240,24 @@ class AgentManager:
         for phone, uid in index_snapshot:
             sess = cached.get(phone)
             if sess is None:
-                sess = AgentSession(phone, uid, self.state_dir, int(self.config.get('history_limit', 24)))
+                sess = AgentSession(phone, uid, self.state_dir, int(self.config.get('history_limit', 60)))
             out.append(sess.summary())
         out.sort(key=lambda s: s.get('last_active') or '', reverse=True)
         return out
 
     def reset_session(self, phone: str) -> bool:
-        """清空该用户的对话历史（保留长期记忆）。"""
+        """清空该用户的对话历史与滚动摘要（保留长期记忆与 RAG 归档）。"""
         sess = self.get_or_create(phone)
         with sess.lock:
             sess.history = []
+            sess.rolling_summary = ''
+            sess.needs_compress = False
+            sess.version += 1
             sess._save()
         return True
 
     def _purge_user_files(self, uid: str):
-        """删除该 user_id 的历史文件和长期记忆目录。"""
+        """删除该 user_id 的历史文件、长期记忆和 RAG 索引。"""
         try:
             p = os.path.join(self.state_dir, f'{uid}.json')
             if os.path.exists(p):
@@ -264,6 +268,17 @@ class AgentManager:
             mem = memory_dir_for(self.state_dir, uid)  # 关键：删记忆，否则确定性 uid 会让记忆复活
             if os.path.isdir(mem):
                 shutil.rmtree(mem, ignore_errors=True)
+        except Exception:
+            pass
+        try:
+            get_rag_store(self.state_dir).purge_user(uid)
+        except Exception:
+            pass
+        # 兜底：直接删目录（store 未初始化时）
+        try:
+            rag = os.path.join(self.state_dir, 'rag', uid)
+            if os.path.isdir(rag):
+                shutil.rmtree(rag, ignore_errors=True)
         except Exception:
             pass
 

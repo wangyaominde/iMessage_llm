@@ -93,8 +93,12 @@
                                 <input type="number" class="form-control" name="max_iters" value="{{ config.max_iters or 8 }}" min="1" max="20">
                             </div>
                             <div class="col">
-                                <label class="form-label">历史保留条数</label>
-                                <input type="number" class="form-control" name="history_limit" value="{{ config.history_limit or 24 }}" min="4" max="200">
+                                <label class="form-label">历史硬上限(条)</label>
+                                <input type="number" class="form-control" name="history_limit" value="{{ config.history_limit or 60 }}" min="4" max="200">
+                            </div>
+                            <div class="col">
+                                <label class="form-label">历史硬上限(字符)</label>
+                                <input type="number" class="form-control" name="history_hard_char_limit" value="{{ config.history_hard_char_limit or 40000 }}" min="4000" max="500000">
                             </div>
                         </div>
 
@@ -123,12 +127,65 @@
                             <div class="form-check"><input class="form-check-input" type="checkbox" name="enable_torrent" id="t_tor" {% if config.enable_torrent %}checked{% endif %}><label class="form-check-label" for="t_tor">BT 资源搜索</label></div>
                         </div>
 
+                        <label class="form-label fw-bold">上下文：RAG + 空闲压缩</label>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="enable_rag" id="t_rag" {% if config.enable_rag %}checked{% endif %}>
+                                <label class="form-check-label" for="t_rag">启用每用户 RAG 召回</label>
+                                <div class="form-text">按联系人隔离检索归档对话与长期记忆，注入本轮相关片段（不跨用户）。</div>
+                            </div>
+                            <div class="form-check mt-2">
+                                <input class="form-check-input" type="checkbox" name="enable_auto_compress" id="t_compress" {% if config.enable_auto_compress %}checked{% endif %}>
+                                <label class="form-check-label" for="t_compress">空闲时自动压缩历史</label>
+                                <div class="form-text">聊天时只标记待压缩；用户停聊一段时间后再异步摘要归档，不拖慢回信。</div>
+                            </div>
+                            <div class="row mt-2">
+                                <div class="col">
+                                    <label class="form-label">RAG top_k</label>
+                                    <input type="number" class="form-control" name="rag_top_k" value="{{ config.rag_top_k or 4 }}" min="1" max="20">
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">压缩后保留条数</label>
+                                    <input type="number" class="form-control" name="history_keep_recent" value="{{ config.history_keep_recent or 8 }}" min="2" max="50">
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">待压缩条数阈值</label>
+                                    <input type="number" class="form-control" name="history_soft_limit" value="{{ config.history_soft_limit or 20 }}" min="4" max="200">
+                                </div>
+                            </div>
+                            <div class="row mt-2">
+                                <div class="col">
+                                    <label class="form-label">待压缩字符预算</label>
+                                    <input type="number" class="form-control" name="history_char_budget" value="{{ config.history_char_budget or 12000 }}" min="2000" max="200000">
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">空闲秒数</label>
+                                    <input type="number" class="form-control" name="compress_idle_seconds" value="{{ config.compress_idle_seconds or 90 }}" min="30" max="3600">
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">压缩轮询间隔(秒)</label>
+                                    <input type="number" class="form-control" name="compress_tick_seconds" value="{{ config.compress_tick_seconds or 30 }}" min="10" max="600">
+                                </div>
+                            </div>
+                        </div>
+
                         <label class="form-label fw-bold">安全</label>
                         <div class="mb-3">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" name="reply_in_groups" id="reply_groups" {% if config.reply_in_groups %}checked{% endif %}>
                                 <label class="form-check-label" for="reply_groups">在群聊里也回复</label>
                                 <div class="form-text text-danger">默认关闭。开启后会给群聊里每个发言人发私信回复，谨慎使用。</div>
+                            </div>
+                            <div class="row mt-2">
+                                <div class="col">
+                                    <label class="form-label">监听地址 bind_host</label>
+                                    <input type="text" class="form-control" name="bind_host" value="{{ config.bind_host or '127.0.0.1' }}" placeholder="127.0.0.1">
+                                    <div class="form-text">改动需重启生效；非本机地址必须设置管理令牌</div>
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">管理令牌</label>
+                                    <input type="password" class="form-control" name="admin_token" value="{{ config.admin_token }}" placeholder="留空则本机免鉴权">
+                                </div>
                             </div>
                         </div>
 

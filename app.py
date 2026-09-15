@@ -3,10 +3,13 @@ import subprocess
 import time
 import threading
 import logging
+import hmac
+import ipaddress
+import base64
 from collections import deque
 from datetime import datetime
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
 
 from imessage_reader import iMessageReader
 from config import config, load_config, save_config, provider_configured
@@ -30,6 +33,7 @@ message_reader = None
 message_reader_thread = None
 agent_manager = None
 reminder_thread = None
+compress_thread = None
 _send_lock = threading.Lock()   # 全局发送锁：任何时刻只有一个 osascript 在发消息
 
 # ---- 失败发送重试队列 ----
@@ -250,7 +254,7 @@ def message_checker():
         stop_event.wait(min(5, config.get('check_interval', 10)))
 
 
-# ---- 提醒调度线程（Phase 4 接入具体逻辑）----
+# ---- 提醒调度线程 ----
 def start_reminder_scheduler():
     global reminder_thread
     try:
@@ -271,7 +275,67 @@ def start_reminder_scheduler():
     reminder_thread.start()
 
 
+# ---- 空闲压缩调度线程（每 tick 最多压 1 个空闲用户）----
+def start_compress_scheduler():
+    global compress_thread
+    try:
+        from agent.compress import scheduler_tick
+    except Exception as e:
+        print(f"压缩调度未启动: {e}")
+        return
+
+    def _loop():
+        while not stop_event.is_set():
+            tick = max(10, int(config.get('compress_tick_seconds', 30) or 30))
+            if config.get('is_running') and config.get('enable_auto_compress', True):
+                try:
+                    scheduler_tick(get_manager())
+                except Exception as e:
+                    print(f"compress 调度出错: {e}")
+            stop_event.wait(tick)
+
+    compress_thread = threading.Thread(target=_loop, daemon=True, name='compress')
+    compress_thread.start()
+
+
 # ================= 路由 =================
+def _admin_token_ok(provided: str, expected: str) -> bool:
+    if not provided or not expected:
+        return False
+    try:
+        return hmac.compare_digest(provided.encode('utf-8'), expected.encode('utf-8'))
+    except Exception:
+        return False
+
+
+@app.before_request
+def _require_admin_token():
+    expected = (config.get('admin_token') or '').strip()
+    if not expected:
+        return None
+    candidates: list[str] = []
+    xt = (request.headers.get('X-Admin-Token') or '').strip()
+    if xt:
+        candidates.append(xt)
+    auth = request.headers.get('Authorization') or ''
+    if auth.lower().startswith('bearer '):
+        candidates.append(auth.split(' ', 1)[1].strip())
+    elif auth.lower().startswith('basic '):
+        try:
+            raw = base64.b64decode(auth.split(' ', 1)[1].strip()).decode('utf-8')
+            if ':' in raw:
+                candidates.append(raw.split(':', 1)[1])
+            else:
+                candidates.append(raw)
+        except Exception:
+            pass
+    if any(_admin_token_ok(c, expected) for c in candidates):
+        return None
+    resp = Response('Unauthorized', 401)
+    resp.headers['WWW-Authenticate'] = 'Basic realm="iMessage Agent"'
+    return resp
+
+
 @app.route('/')
 def index():
     return render_template('index.html', config=config)
@@ -299,6 +363,12 @@ def save_config_route():
     # agent
     upd('system_prompt')
     upd('max_tokens', cast=int); upd('max_iters', cast=int); upd('history_limit', cast=int)
+    upd('history_hard_char_limit', cast=int)
+    upd('rag_top_k', cast=int)
+    upd('history_keep_recent', cast=int); upd('history_soft_limit', cast=int)
+    upd('history_char_budget', cast=int)
+    upd('compress_idle_seconds', cast=int); upd('compress_tick_seconds', cast=int)
+    upd('bind_host'); upd('admin_token')
     # 服务
     upd('check_interval', cast=int); upd('force_check_interval', cast=int)
     check_mode = f.get('check_mode')
@@ -311,6 +381,8 @@ def save_config_route():
         config['enable_memory'] = 'enable_memory' in f
         config['enable_reminder'] = 'enable_reminder' in f
         config['enable_torrent'] = 'enable_torrent' in f
+        config['enable_rag'] = 'enable_rag' in f
+        config['enable_auto_compress'] = 'enable_auto_compress' in f
         config['use_system_watcher'] = 'use_system_watcher' in f
         config['reply_in_groups'] = 'reply_in_groups' in f
 
@@ -416,6 +488,21 @@ def force_check():
     return jsonify({'success': True, 'message': 'reader 会自动检测新消息'})
 
 
+def _is_loopback_bind(host: str) -> bool:
+    """回环地址才算本机；0.0.0.0 / :: 等未指定地址不算。"""
+    h = (host or '').strip()
+    if not h:
+        return True
+    if h.startswith('[') and h.endswith(']'):
+        h = h[1:-1]
+    if h in ('0.0.0.0', '::', '::0'):
+        return False
+    try:
+        return bool(ipaddress.ip_address(h).is_loopback)
+    except ValueError:
+        return h.lower() in ('localhost',)
+
+
 def start_app():
     global stop_event, check_thread
     load_config()
@@ -424,11 +511,17 @@ def start_app():
     check_thread = threading.Thread(target=message_checker, daemon=True)
     check_thread.start()
     start_reminder_scheduler()
+    start_compress_scheduler()
     if config['is_running']:
         if not start_message_reader():
             add_log("启动消息监控失败，请检查权限", 'error')
-    print("iMessage Agent 服务已启动，访问 http://127.0.0.1:8877 进行配置")
-    app.run(host='0.0.0.0', port=8877, debug=False, use_reloader=False)
+    host = config.get('bind_host') or '127.0.0.1'
+    token = (config.get('admin_token') or '').strip()
+    if not _is_loopback_bind(host) and not token:
+        add_log("非本机监听必须设置管理令牌，已强制回退 127.0.0.1", 'error')
+        host = '127.0.0.1'
+    print(f"iMessage Agent 服务已启动，访问 http://{host}:8877 进行配置")
+    app.run(host=host, port=8877, debug=False, use_reloader=False)
 
 
 def cleanup():
