@@ -116,8 +116,101 @@ def strip_markdown(text: str) -> str:
     return text if text else original.strip()
 
 
-def clean_reply(text: str) -> str:
-    """出站文本的统一清洗入口：思维链 → Markdown → 空行整理。"""
+# ---- 身份泄漏拦截 ----
+# 模型预训练人设会自称 MiniMax / Claude / GPT 等；这是本仓库作者的 iMessage 助手，
+# 厂商只是后端。只拦「我是/我由某某厂商」这类自称，新闻里提到公司名不误伤。
+_VENDOR = (
+    r'(?:mini\s*max|minimax|海螺(?:\s*ai)?|hailuo(?:\s*ai)?|'
+    r'anthropic|claude|'
+    r'openai|chatgpt|gpt-?\d|'
+    r'deepseek|deep\s*seek|'
+    r'gemini|'
+    r'(?<![a-z])xai(?![a-z])|x\.ai|\bgrok\b|'
+    r'qwen|通义(?:千问)?|'
+    r'豆包|doubao|'
+    r'\bkimi\b|moonshot|'
+    r'智谱|chatglm|\bglm-?\d|'
+    r'mistral|'
+    r'\bllama\b|'
+    r'字节跳动)'
+)
+_LEAK_RES = [
+    re.compile(r'我[们]?由\s*' + _VENDOR, re.I),
+    re.compile(
+        r'我[们]?(?:是|叫|名为)\s*(?:一[个名只]|an?\s+|the\s+)?'
+        r'(?:AI\s*|ai\s*|人工智能|大模型|语言模型|助手|assistant\s*){0,3}' + _VENDOR,
+        re.I,
+    ),
+    re.compile(r'我[们]?来自\s*' + _VENDOR, re.I),
+    re.compile(r'我[们]?所属(?:于)?\s*' + _VENDOR, re.I),
+    re.compile(r'本(?:模型|助手|产品)由\s*' + _VENDOR, re.I),
+    re.compile(r'我的(?:版本|型号|名字|名称)\s*(?:是|:|：)?\s*' + _VENDOR, re.I),
+    re.compile(r'我[们]?(?:用的|跑的|调用的)(?:模型)?(?:是|了)?\s*' + _VENDOR, re.I),
+    re.compile(r'我[们]?.{0,12}就是\s*' + _VENDOR, re.I),
+    re.compile(r'(?:底层|当前|这次)(?:用的|跑的)?(?:模型)?(?:是|:|：)?\s*' + _VENDOR, re.I),
+    re.compile(r'随负载'),
+    re.compile(r'智能模型（基于'),
+    re.compile(r'deepseekv3.{0,48}gpt-?4o.{0,48}grok', re.I),
+    re.compile(r'我的?知识截止', re.I),
+    re.compile(
+        r"\bi(?:['’]m|\s+am|\s+was)\s+(?:an?\s+|the\s+)?"
+        r'(?:ai\s+|large\s+language\s+model\s+|language\s+model\s+|assistant\s+|chatbot\s+)*'
+        + _VENDOR,
+        re.I,
+    ),
+    re.compile(
+        r"\bi(?:['’]m|\s+am|\s+was)\s+(?:an?\s+|the\s+)?"
+        r'(?:ai\s+|assistant\s+|language\s+model\s+)*'
+        r'(?:created|developed|trained|built|made)\s+by\s+' + _VENDOR,
+        re.I,
+    ),
+    re.compile(r"\bi(?:['’]m|\s+am)\b.{0,48}based on\s+" + _VENDOR, re.I),
+    re.compile(r'my knowledge\s+(?:cut[- ]?off|cutoff|is current (?:up )?through)', re.I),
+]
+_SENT_SPLIT = re.compile(r'(?<=[。！？!?])\s*|(?<=\n)')
+
+IDENTITY_COVER = '我是汽水西瓜，一个跑在 iMessage 上的助手。底层模型不讨论。'
+
+
+def sentence_has_identity_leak(sentence: str) -> bool:
+    s = (sentence or '').strip()
+    if not s:
+        return False
+    return any(p.search(s) for p in _LEAK_RES)
+
+
+def has_identity_leak(text: str) -> bool:
+    return any(sentence_has_identity_leak(p) for p in _SENT_SPLIT.split(text or '') if p.strip())
+
+
+def guard_identity(text: str, *, allow_cover: bool = True) -> str:
+    """去掉自称厂商/创建者的句子。整段都是泄漏则换成统一口径。"""
     if not text:
         return text
-    return strip_markdown(strip_think(text))
+    parts = _SENT_SPLIT.split(text)
+    kept: list[str] = []
+    dropped = False
+    for part in parts:
+        if not part.strip():
+            if kept:
+                kept.append(part)
+            continue
+        if sentence_has_identity_leak(part):
+            dropped = True
+            continue
+        kept.append(part)
+    leftover = ''.join(kept).strip()
+    leftover = _MULTI_BLANK.sub('\n\n', leftover).strip()
+    if leftover:
+        return leftover
+    if dropped and allow_cover:
+        return IDENTITY_COVER
+    return leftover if dropped else text
+
+
+def clean_reply(text: str) -> str:
+    """出站文本的统一清洗入口：思维链 → Markdown → 身份拦截。"""
+    if not text:
+        return text
+    return guard_identity(strip_markdown(strip_think(text)))
+

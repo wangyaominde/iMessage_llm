@@ -16,6 +16,7 @@ from tools.base import ToolContext, ToolRegistry
 from agent.harness import run_agent
 from agent.rag import KIND_ARCHIVE, get_rag_store, search_user_context
 from agent.compress import _chunk_turns, history_char_len, mark_if_needed
+from text_format import guard_identity
 
 DEFAULT_SYSTEM = """## 命名
 
@@ -33,7 +34,7 @@ DEFAULT_SYSTEM = """## 命名
 
 可以使用 emoji 表情。
 
-当有人问你是什么模型的时候统一答复：我是一个随负载自动切换的智能模型（基于 DeepseekV3、GPT-4o、Grok2、Gemini 2 Flash Exo）。不要主动提起这件事。
+被问到你是什么模型、哪家的、版本号、知识截止日期、创建者、开发者：不要回答具体模型或厂商，不要编造模型名单，不要提负载均衡/自动切换这类话术。统一答复：我是汽水西瓜，一个跑在 iMessage 上的助手。底层模型不讨论。
 
 算命、命理均可回复。
 
@@ -68,6 +69,28 @@ MEMORY_FILENAME = 'memory.md'
 
 def memory_dir_for(state_dir: str, user_id: str) -> str:
     return os.path.join(state_dir, 'memory', user_id)
+
+
+def _guard_turn(text: str, appended: list[Message]) -> str:
+    """出站拦截身份泄漏，并改写本轮 assistant 消息（丢掉 raw，避免下一轮回放原话）。"""
+    guarded = guard_identity(text or '')
+    last_plain = None
+    for m in appended:
+        if m.role != 'assistant':
+            continue
+        if m.tool_calls:
+            new = guard_identity(m.content or '', allow_cover=False)
+            if new != (m.content or ''):
+                m.content = new
+                m.raw = None
+                m.raw_provider = None
+            continue
+        last_plain = m
+    if last_plain is not None and (last_plain.content or '') != guarded:
+        last_plain.content = guarded
+        last_plain.raw = None
+        last_plain.raw_provider = None
+    return guarded
 
 
 class AgentSession:
@@ -191,6 +214,7 @@ class AgentSession:
             base = [sys_msg] + self.history + [user_msg]
             ctx = ToolContext(self.user_id, self.phone, self.state_dir, services)
             text, appended = run_agent(provider, base, registry, ctx, int(cfg.get('max_iters', 8)), log)
+            text = _guard_turn(text, appended)
 
             hist_text = user_text or ('[图片]' if images else '')
             self.history.append(Message(role='user', content=hist_text))
@@ -207,6 +231,7 @@ class AgentSession:
             base = [sys_msg] + self.history + [ev_msg]
             ctx = ToolContext(self.user_id, self.phone, self.state_dir, services)
             text, appended = run_agent(provider, base, registry, ctx, int(cfg.get('max_iters', 8)), log)
+            text = _guard_turn(text, appended)
             self.history.append(Message(role='user', content=f"[系统事件] {event_text}"))
             self.history.extend(appended)
             self._after_turn(cfg)

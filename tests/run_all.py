@@ -12,6 +12,7 @@ SCRIPTS = [
     ('RAG/压缩', 'tests/test_rag_compress_functional.py'),
     ('定时提醒', 'tests/test_reminder_functional.py'),
     ('P0/P1/安全', 'tests/test_p0_p1_security.py'),
+    ('身份拦截', 'tests/test_identity_guard.py'),
 ]
 
 FOOTER_RE = re.compile(
